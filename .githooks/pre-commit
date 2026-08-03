@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+
+echo "🔍 Running Dev Container Pre-Commit Automation Hooks..."
+
+# 1. Force the Rust formatter to check layout constraints
+echo "├─ Checking code formatting rules (cargo fmt)..."
+cargo fmt -- --check
+
+# 2. Run the compiler lint analyzer (automatically errors on warnings now)
+echo "├─ Running compiler linter checks (cargo clippy)..."
+cargo clippy
+
+echo "└─ All checks passed! Proceeding with commit."

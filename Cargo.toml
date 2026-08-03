@@ -1,0 +1,11 @@
+[package]
+name = "RaydioSurfer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+raylib = { version = "6.0", features = ["raygui"] }
+radiobrowser = { version = "0.6.1", features = ["blocking"] }
+
+[lints.rust]
+warnings = "deny"
