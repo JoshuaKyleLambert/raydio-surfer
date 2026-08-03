@@ -1,16 +1,18 @@
 use raylib::drawing::RaylibDrawHandle;
 use raylib::prelude::*;
 
-pub fn build(d: &mut RaylibDrawHandle<'_>, search_box: &mut String) {
+pub fn build(
+    d: &mut RaylibDrawHandle<'_>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    search_box: &mut String,
+) {
     d.gui_set_style(
         GuiControl::TEXTBOX,
         GuiControlProperty::TEXT_ALIGNMENT,
         raylib::ffi::GuiTextAlignment::TEXT_ALIGN_CENTER as i32,
     );
-    d.gui_set_style(
-        GuiControl::TEXTBOX,
-        GuiControlProperty::BASE_COLOR_NORMAL,
-        Color::new(25, 25, 30, 255).color_to_int(),
-    );
-    d.gui_text_box(Rectangle::new(10.0, 10.0, 200.0, 25.0), search_box, true);
+    d.gui_text_box(Rectangle::new(x, y, w, h), search_box, true);
 }

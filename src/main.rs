@@ -25,7 +25,8 @@ fn main() {
         d.clear_background(BACKGROUND_COLOR);
         //d.draw_text("Internet Radio", 3, 3, 30, TEXT_COLOR);
         d.gui_group_box(Rectangle::new(5.0, 5.0, 790.0, 440.0), "Internet Radio");
-        controls::search_box::build(&mut d, &mut search_term);
+        controls::search_box::build(&mut d, 10.0, 10.0, 100.0, 20.0, &mut search_term);
+        controls::search_box::build(&mut d, 10.0, 50.0, 100.0, 20.0, &mut search_term);
     }
 }
 
