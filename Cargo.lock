@@ -8,6 +8,8 @@ version = "0.1.0"
 dependencies = [
  "radiobrowser",
  "raylib",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

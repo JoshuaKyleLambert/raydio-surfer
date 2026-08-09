@@ -1,2 +1,4 @@
 /target/
 /.vscode/.react/
+/.idea/
+stations_cache.json
