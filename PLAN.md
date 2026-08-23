@@ -130,15 +130,15 @@ To ensure RaydioSurfer looks gorgeous and remains perfectly usable across **Mobi
 - [x] Implement non-blocking `AudioController` channel.
 - [x] Initial single-channel playback verification in main loop.
 
-### Phase 2: Responsive Engine & Vintage State Model (Current Target)
-- [ ] **Responsive Layout Engine (`src/layout.rs`)**:
+### Phase 2: Responsive Engine & Vintage State Model (Completed)
+- [x] **Responsive Layout Engine (`src/layout.rs`)**:
   - Implement dynamic proportional coordinate calculators based on `GetScreenWidth()` and `GetScreenHeight()`.
   - Automatic Landscape vs. Portrait layout switching.
   - Dynamic font sizing and scalable touch target margins.
-- [ ] **State & Presets (`src/presets.rs`, `src/bands.rs`)**:
+- [x] **State & Presets (`src/presets.rs`, `src/bands.rs`)**:
   - Waveband definitions and fast indexed tag filtering.
   - 6 preset slots with serialization to `presets.json`.
-- [ ] **Vintage UI Controls (`src/controls/vintage_ui.rs`)**:
+- [x] **Vintage UI Controls (`src/controls/vintage_ui.rs`)**:
   - Backlit glass display with live scope counter (`X / Y (Total: ~60k)`).
   - Prominent search bar with quick clear.
   - Waveband push-button row.

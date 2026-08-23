@@ -107,6 +107,7 @@ pub fn search_stations(api: &mut RadioBrowserAPI, search: &str) -> Vec<CachedSta
 fn truncate(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
+#[expect(dead_code)]
 pub fn stations_to_string(stations: &[CachedStation]) -> String {
     stations
         .iter()

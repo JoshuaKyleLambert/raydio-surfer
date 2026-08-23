@@ -1,6 +1,7 @@
 use raylib::drawing::RaylibDrawHandle;
 use raylib::prelude::*;
 
+#[expect(dead_code)]
 pub fn build(
     d: &mut RaylibDrawHandle<'_>,
     x: f32,
