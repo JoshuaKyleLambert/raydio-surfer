@@ -12,7 +12,7 @@ pub fn build(
     d.gui_set_style(
         GuiControl::TEXTBOX,
         GuiControlProperty::TEXT_ALIGNMENT,
-        raylib::ffi::GuiTextAlignment::TEXT_ALIGN_CENTER as i32,
+        raylib::ffi::GuiTextAlignment::TEXT_ALIGN_LEFT as i32,
     );
     d.gui_text_box(Rectangle::new(x, y, w, h), search_box, true);
 }
