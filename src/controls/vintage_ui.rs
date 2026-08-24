@@ -19,6 +19,9 @@ const COLOR_DIAL_TRACK_BG: Color = Color::new(14, 14, 20, 255);
 const COLOR_DIAL_TICK: Color = Color::new(90, 90, 110, 255);
 const COLOR_DIAL_TICK_TEXT: Color = Color::new(130, 130, 155, 255);
 
+pub const TITLE_ANIM_STEP_INTERVAL: f32 = 0.20;
+pub const TITLE_ANIM_PAUSE_DURATION: f32 = 1.2;
+
 pub struct VintageUiState {
     pub search_input: String,
     pub active_band: GenreBand,
@@ -26,6 +29,11 @@ pub struct VintageUiState {
     pub is_muted: bool,
     pub volume: f32,
     pub status_feedback: Option<(String, f32)>, // Feedback text and timer
+    pub title_anim_offset: usize,
+    pub title_anim_direction: i8, // 1 for forward, -1 for reverse
+    pub title_anim_timer: f32,
+    pub title_anim_pause: f32,
+    pub last_station_title: String,
 }
 
 impl VintageUiState {
@@ -37,6 +45,115 @@ impl VintageUiState {
             is_muted: false,
             volume: initial_volume,
             status_feedback: None,
+            title_anim_offset: 0,
+            title_anim_direction: 1,
+            title_anim_timer: 0.0,
+            title_anim_pause: TITLE_ANIM_PAUSE_DURATION,
+            last_station_title: String::new(),
+        }
+    }
+}
+
+pub fn compute_title_marquee_slice<F>(
+    title: &str,
+    max_pixel_width: i32,
+    font_size: i32,
+    current_offset: usize,
+    measure_fn: F,
+) -> (String, usize)
+where
+    F: Fn(&str, i32) -> i32,
+{
+    if title.is_empty() || measure_fn(title, font_size) <= max_pixel_width {
+        return (title.to_string(), 0);
+    }
+
+    let chars: Vec<char> = title.chars().collect();
+    let n = chars.len();
+
+    // Determine how many characters from the end can fit into max_pixel_width
+    let mut end_chars_fit = 0;
+    while end_chars_fit < n {
+        let start_from_end = n - 1 - end_chars_fit;
+        let candidate: String = chars[start_from_end..n].iter().collect();
+        if measure_fn(&candidate, font_size) > max_pixel_width {
+            break;
+        }
+        end_chars_fit += 1;
+    }
+
+    let end_window = end_chars_fit.max(1);
+    let max_offset = n.saturating_sub(end_window);
+
+    if max_offset == 0 {
+        return (title.to_string(), 0);
+    }
+
+    let offset = current_offset.min(max_offset);
+
+    // Take as many characters as fit starting at `offset`
+    let mut take_count = 0;
+    while offset + take_count < n {
+        let candidate: String = chars[offset..=offset + take_count].iter().collect();
+        if measure_fn(&candidate, font_size) > max_pixel_width {
+            break;
+        }
+        take_count += 1;
+    }
+    let take_count = take_count.max(1);
+    let visible_slice: String = chars[offset..offset + take_count].iter().collect();
+
+    (visible_slice, max_offset)
+}
+
+pub fn update_title_animation(
+    dt: f32,
+    max_offset: usize,
+    offset: &mut usize,
+    direction: &mut i8,
+    timer: &mut f32,
+    pause: &mut f32,
+) {
+    if max_offset == 0 {
+        *offset = 0;
+        *direction = 1;
+        *timer = 0.0;
+        *pause = 0.0;
+        return;
+    }
+
+    if *pause > 0.0 {
+        *pause = (*pause - dt).max(0.0);
+        return;
+    }
+
+    *timer += dt;
+    while *timer >= TITLE_ANIM_STEP_INTERVAL {
+        *timer -= TITLE_ANIM_STEP_INTERVAL;
+        if *direction >= 0 {
+            if *offset < max_offset {
+                *offset += 1;
+                if *offset == max_offset {
+                    *direction = -1;
+                    *pause = TITLE_ANIM_PAUSE_DURATION;
+                    break;
+                }
+            } else {
+                *direction = -1;
+                *pause = TITLE_ANIM_PAUSE_DURATION;
+                break;
+            }
+        } else if *offset > 0 {
+            *offset -= 1;
+            if *offset == 0 {
+                *direction = 1;
+                *pause = TITLE_ANIM_PAUSE_DURATION;
+                break;
+            }
+        } else {
+            *direction = 1;
+            *pause = TITLE_ANIM_PAUSE_DURATION;
+            break;
         }
     }
 }
@@ -107,9 +224,37 @@ pub fn render_vintage_stereo(
     } else {
         "NO STATIONS FOUND FOR SEARCH"
     };
+
+    if ui.last_station_title != main_title {
+        ui.last_station_title = main_title.to_string();
+        ui.title_anim_offset = 0;
+        ui.title_anim_direction = 1;
+        ui.title_anim_timer = 0.0;
+        ui.title_anim_pause = TITLE_ANIM_PAUSE_DURATION;
+    }
+
+    let max_title_width = (layout.display_rect.width - 24.0).max(10.0) as i32;
+    let (display_title, max_offset) = compute_title_marquee_slice(
+        main_title,
+        max_title_width,
+        layout.font_display_large,
+        ui.title_anim_offset,
+        |s, size| d.measure_text(s, size),
+    );
+
+    let dt = d.get_frame_time();
+    update_title_animation(
+        dt,
+        max_offset,
+        &mut ui.title_anim_offset,
+        &mut ui.title_anim_direction,
+        &mut ui.title_anim_timer,
+        &mut ui.title_anim_pause,
+    );
+
     let title_y = disp_y + layout.font_display_small + 4;
     d.draw_text(
-        main_title,
+        &display_title,
         disp_x,
         title_y,
         layout.font_display_large,
@@ -396,5 +541,110 @@ mod tests {
         assert_eq!(state.active_index, 0);
         assert!(state.search_input.is_empty());
         assert!(state.status_feedback.is_none());
+        assert_eq!(state.title_anim_offset, 0);
+        assert_eq!(state.title_anim_direction, 1);
+        assert_eq!(state.title_anim_pause, TITLE_ANIM_PAUSE_DURATION);
+    }
+
+    #[test]
+    fn test_compute_title_marquee_slice_fits() {
+        let title = "Short Title";
+        // Mock measure: 10 pixels per char
+        let mock_measure = |s: &str, _: i32| (s.chars().count() * 10) as i32;
+
+        let (slice, max_offset) = compute_title_marquee_slice(title, 200, 20, 0, mock_measure);
+        assert_eq!(slice, "Short Title");
+        assert_eq!(max_offset, 0);
+    }
+
+    #[test]
+    fn test_compute_title_marquee_slice_overflow_and_offsets() {
+        // 30-character string: "0123456789abcdefghij0123456789"
+        let title = "0123456789abcdefghij0123456789";
+        // Max width fits 20 chars (200 pixels with 10px per char)
+        let mock_measure = |s: &str, _: i32| (s.chars().count() * 10) as i32;
+
+        // Offset 0: first 20 characters
+        let (slice0, max_offset) = compute_title_marquee_slice(title, 200, 20, 0, mock_measure);
+        assert_eq!(slice0, "0123456789abcdefghij");
+        assert_eq!(max_offset, 10);
+
+        // Offset 1: characters 1..21
+        let (slice1, _) = compute_title_marquee_slice(title, 200, 20, 1, mock_measure);
+        assert_eq!(slice1, "123456789abcdefghij0");
+
+        // Offset 10 (max offset): last 20 characters (10..30)
+        let (slice10, _) = compute_title_marquee_slice(title, 200, 20, 10, mock_measure);
+        assert_eq!(slice10, "abcdefghij0123456789");
+    }
+
+    #[test]
+    fn test_compute_title_marquee_slice_unicode() {
+        // Multi-byte Unicode characters (21 characters)
+        let title = "東京FMラジオステーション・クラシック音楽";
+        let mock_measure = |s: &str, _: i32| (s.chars().count() * 10) as i32;
+
+        // Window fits 10 characters (100 pixels / 10px per char)
+        let (slice0, max_offset) = compute_title_marquee_slice(title, 100, 20, 0, mock_measure);
+        assert_eq!(slice0, "東京FMラジオステー"); // 10 chars
+        assert_eq!(max_offset, 11);
+
+        let (slice_end, _) = compute_title_marquee_slice(title, 100, 20, 11, mock_measure);
+        assert_eq!(slice_end, "ョン・クラシック音楽"); // 10 chars
+    }
+
+    #[test]
+    fn test_update_title_animation_lifecycle() {
+        let max_offset = 3;
+        let mut offset = 0;
+        let mut direction = 1;
+        let mut timer = 0.0;
+        let mut pause = TITLE_ANIM_PAUSE_DURATION;
+
+        // 1. Initial pause: timer does not advance offset while pausing
+        update_title_animation(0.5, max_offset, &mut offset, &mut direction, &mut timer, &mut pause);
+        assert_eq!(offset, 0);
+        assert_eq!(direction, 1);
+        assert!(pause > 0.0);
+
+        // Finish remaining pause
+        update_title_animation(1.0, max_offset, &mut offset, &mut direction, &mut timer, &mut pause);
+        assert_eq!(pause, 0.0);
+        assert_eq!(offset, 0);
+
+        // 2. Step forward 0 -> 1 -> 2 -> 3
+        update_title_animation(TITLE_ANIM_STEP_INTERVAL, max_offset, &mut offset, &mut direction, &mut timer, &mut pause);
+        assert_eq!(offset, 1);
+        assert_eq!(direction, 1);
+
+        update_title_animation(TITLE_ANIM_STEP_INTERVAL, max_offset, &mut offset, &mut direction, &mut timer, &mut pause);
+        assert_eq!(offset, 2);
+        assert_eq!(direction, 1);
+
+        // Reaching max_offset (3) reverses direction to -1 and sets pause
+        update_title_animation(TITLE_ANIM_STEP_INTERVAL, max_offset, &mut offset, &mut direction, &mut timer, &mut pause);
+        assert_eq!(offset, 3);
+        assert_eq!(direction, -1);
+        assert_eq!(pause, TITLE_ANIM_PAUSE_DURATION);
+
+        // 3. Pause at the end
+        update_title_animation(TITLE_ANIM_PAUSE_DURATION, max_offset, &mut offset, &mut direction, &mut timer, &mut pause);
+        assert_eq!(pause, 0.0);
+        assert_eq!(offset, 3);
+
+        // 4. Step backward 3 -> 2 -> 1 -> 0
+        update_title_animation(TITLE_ANIM_STEP_INTERVAL, max_offset, &mut offset, &mut direction, &mut timer, &mut pause);
+        assert_eq!(offset, 2);
+        assert_eq!(direction, -1);
+
+        update_title_animation(TITLE_ANIM_STEP_INTERVAL, max_offset, &mut offset, &mut direction, &mut timer, &mut pause);
+        assert_eq!(offset, 1);
+        assert_eq!(direction, -1);
+
+        // Reaching 0 reverses direction to 1 and sets pause
+        update_title_animation(TITLE_ANIM_STEP_INTERVAL, max_offset, &mut offset, &mut direction, &mut timer, &mut pause);
+        assert_eq!(offset, 0);
+        assert_eq!(direction, 1);
+        assert_eq!(pause, TITLE_ANIM_PAUSE_DURATION);
     }
 }

@@ -34,6 +34,8 @@ fn main() {
         .size(860, 480)
         .title("RaydioSurfer - Vintage Internet Radio")
         .resizable()
+        .highdpi()
+        .always_run()
         .build();
 
     rl.set_target_fps(60);
@@ -176,10 +178,21 @@ fn _get_stations() -> Option<Vec<ApiStation>> {
 // This attribute tells the compiler to only build this module when running tests
 #[cfg(test)]
 mod tests {
-    // A dummy test that always passes to verify your environment works
     #[test]
     fn test_environment_initialization() {
         let execution_status = true;
         assert!(execution_status);
+    }
+
+    #[test]
+    fn test_check_builder_methods() {
+        let mut builder = raylib::init();
+        let _ = builder
+            .size(860, 480)
+            .title("RaydioSurfer - Vintage Internet Radio")
+            .resizable()
+            .highdpi()
+            .always_run()
+            .vsync();
     }
 }
