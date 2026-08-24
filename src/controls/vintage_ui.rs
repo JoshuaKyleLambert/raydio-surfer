@@ -162,6 +162,7 @@ pub struct StationViewContext<'a> {
     pub total_stations_count: usize,
     pub active_filtered_count: usize,
     pub current_station: Option<&'a CachedStation>,
+    pub all_stations: Option<&'a [CachedStation]>,
 }
 
 pub fn render_vintage_stereo(
@@ -483,6 +484,13 @@ pub fn render_vintage_stereo(
                 if ui.is_muted {
                     ui.is_muted = false;
                     audio.set_volume(ui.volume);
+                }
+                if let Some(all) = ctx.all_stations
+                    && let Some(pos) = all.iter().position(|s| s.url == st.url || s.name == st.name)
+                {
+                    ui.active_band = GenreBand::All;
+                    ui.search_input.clear();
+                    ui.active_index = pos;
                 }
                 audio.play(st.name.clone(), st.url.clone());
                 ui.status_feedback = Some((format!("Tuned to Preset [{}]", i + 1), 3.0));

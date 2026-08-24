@@ -29,6 +29,7 @@ fn main() {
     let mut last_band = ui.active_band;
     let mut active_stations =
         bands::filter_by_band_and_search(&all_stations, ui.active_band, &ui.search_input);
+    let mut last_played_channel: Option<(String, String)> = None;
 
     let (mut rl, thread) = raylib::init()
         .size(860, 480)
@@ -59,17 +60,6 @@ fn main() {
             ui.active_index = 0;
         }
 
-        // Clamp active index
-        if !active_stations.is_empty() && ui.active_index >= active_stations.len() {
-            ui.active_index = active_stations.len() - 1;
-        }
-
-        let current_station = if !active_stations.is_empty() {
-            Some(&active_stations[ui.active_index])
-        } else {
-            None
-        };
-
         // Keyboard Shortcuts
         // Number keys 1..=6 to recall presets
         for i in 0..6 {
@@ -89,7 +79,18 @@ fn main() {
                     ui.is_muted = false;
                     audio.set_volume(ui.volume);
                 }
+                if let Some(pos) = active_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
+                    ui.active_index = pos;
+                } else if let Some(pos) = all_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
+                    ui.active_band = GenreBand::All;
+                    ui.search_input.clear();
+                    active_stations = bands::filter_by_band_and_search(&all_stations, ui.active_band, &ui.search_input);
+                    last_search = ui.search_input.clone();
+                    last_band = ui.active_band;
+                    ui.active_index = pos;
+                }
                 audio.play(st.name.clone(), st.url.clone());
+                last_played_channel = Some((st.name.clone(), st.url.clone()));
                 ui.status_feedback = Some((format!("Tuned to Preset [{}]", i + 1), 3.0));
             }
         }
@@ -105,6 +106,17 @@ fn main() {
             ui.active_index += 1;
         }
 
+        // Clamp active index
+        if !active_stations.is_empty() && ui.active_index >= active_stations.len() {
+            ui.active_index = active_stations.len() - 1;
+        }
+
+        let current_station = if !active_stations.is_empty() {
+            Some(&active_stations[ui.active_index])
+        } else {
+            None
+        };
+
         // Enter key to play currently tuned station
         if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
             && let Some(st) = current_station
@@ -114,6 +126,7 @@ fn main() {
                 audio.set_volume(ui.volume);
             }
             audio.play(st.name.clone(), st.url.clone());
+            last_played_channel = Some((st.name.clone(), st.url.clone()));
         }
 
         // M key for mute / play toggle
@@ -129,15 +142,32 @@ fn main() {
                     && let Some(st) = current_station
                 {
                     audio.play(st.name.clone(), st.url.clone());
+                    last_played_channel = Some((st.name.clone(), st.url.clone()));
                 }
             } else if !is_playing_or_connecting {
                 audio.set_volume(ui.volume);
                 if let Some(st) = current_station {
                     audio.play(st.name.clone(), st.url.clone());
+                    last_played_channel = Some((st.name.clone(), st.url.clone()));
                 }
             } else {
                 ui.is_muted = true;
                 audio.set_volume(0.0);
+            }
+        }
+
+        // As soon as the channel has changed, start playing by any means
+        let current_channel = current_station.map(|s| (s.name.clone(), s.url.clone()));
+        if current_channel != last_played_channel {
+            last_played_channel = current_channel.clone();
+            if let Some(st) = current_station {
+                if ui.is_muted {
+                    ui.is_muted = false;
+                    audio.set_volume(ui.volume);
+                }
+                audio.play(st.name.clone(), st.url.clone());
+            } else {
+                audio.stop();
             }
         }
 
@@ -154,6 +184,7 @@ fn main() {
             total_stations_count,
             active_filtered_count: active_stations.len(),
             current_station,
+            all_stations: Some(&all_stations),
         };
 
         render_vintage_stereo(&mut d, &layout, &mut ui, &mut presets, &audio, ctx);
@@ -178,6 +209,8 @@ fn _get_stations() -> Option<Vec<ApiStation>> {
 // This attribute tells the compiler to only build this module when running tests
 #[cfg(test)]
 mod tests {
+    use crate::api::CachedStation;
+
     #[test]
     fn test_environment_initialization() {
         let execution_status = true;
@@ -194,5 +227,83 @@ mod tests {
             .highdpi()
             .always_run()
             .vsync();
+    }
+
+    #[test]
+    fn test_channel_change_detection_triggers() {
+        let station_a = CachedStation {
+            stationuuid: "uuid-1".to_string(),
+            name: "Station Alpha".to_string(),
+            url: "http://stream.alpha.fm".to_string(),
+            tags: "rock,classic".to_string(),
+        };
+        let station_b = CachedStation {
+            stationuuid: "uuid-2".to_string(),
+            name: "Station Beta".to_string(),
+            url: "http://stream.beta.fm".to_string(),
+            tags: "jazz,smooth".to_string(),
+        };
+
+        let mut last_played_channel: Option<(String, String)> = None;
+
+        // 1. Initial selection of Station Alpha
+        let current_station = Some(&station_a);
+        let current_channel = current_station.map(|s| (s.name.clone(), s.url.clone()));
+        assert_ne!(current_channel, last_played_channel);
+        last_played_channel = current_channel;
+        assert_eq!(
+            last_played_channel,
+            Some(("Station Alpha".to_string(), "http://stream.alpha.fm".to_string()))
+        );
+
+        // 2. Same frame / no change
+        let current_station = Some(&station_a);
+        let current_channel = current_station.map(|s| (s.name.clone(), s.url.clone()));
+        assert_eq!(current_channel, last_played_channel);
+
+        // 3. Channel changed to Station Beta
+        let current_station = Some(&station_b);
+        let current_channel = current_station.map(|s| (s.name.clone(), s.url.clone()));
+        assert_ne!(current_channel, last_played_channel);
+        last_played_channel = current_channel;
+        assert_eq!(
+            last_played_channel,
+            Some(("Station Beta".to_string(), "http://stream.beta.fm".to_string()))
+        );
+
+        // 4. Channel changed to None (e.g. 0 search results)
+        let current_station: Option<&CachedStation> = None;
+        let current_channel = current_station.map(|s| (s.name.clone(), s.url.clone()));
+        assert_ne!(current_channel, last_played_channel);
+        last_played_channel = current_channel;
+        assert_eq!(last_played_channel, None);
+    }
+
+    #[test]
+    fn test_preset_station_sync_to_index() {
+        let stations = vec![
+            CachedStation {
+                stationuuid: "1".to_string(),
+                name: "Rock Radio".to_string(),
+                url: "http://rock.com".to_string(),
+                tags: "rock".to_string(),
+            },
+            CachedStation {
+                stationuuid: "2".to_string(),
+                name: "Jazz Groove".to_string(),
+                url: "http://jazz.com".to_string(),
+                tags: "jazz".to_string(),
+            },
+        ];
+
+        let preset_station = CachedStation {
+            stationuuid: "2".to_string(),
+            name: "Jazz Groove".to_string(),
+            url: "http://jazz.com".to_string(),
+            tags: "jazz".to_string(),
+        };
+
+        let pos = stations.iter().position(|s| s.url == preset_station.url || s.name == preset_station.name);
+        assert_eq!(pos, Some(1));
     }
 }
