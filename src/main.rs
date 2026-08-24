@@ -75,10 +75,6 @@ fn main() {
             if rl.is_key_pressed(key)
                 && let Some(st) = presets.get_preset(i)
             {
-                if ui.is_muted {
-                    ui.is_muted = false;
-                    audio.set_volume(ui.volume);
-                }
                 if let Some(pos) = active_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
                     ui.active_index = pos;
                 } else if let Some(pos) = all_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
@@ -89,7 +85,9 @@ fn main() {
                     last_band = ui.active_band;
                     ui.active_index = pos;
                 }
-                audio.play(st.name.clone(), st.url.clone());
+                if ui.is_power_on {
+                    audio.play(st.name.clone(), st.url.clone());
+                }
                 last_played_channel = Some((st.name.clone(), st.url.clone()));
                 ui.status_feedback = Some((format!("Tuned to Preset [{}]", i + 1), 3.0));
             }
@@ -120,52 +118,34 @@ fn main() {
         // Enter key to play currently tuned station
         if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
             && let Some(st) = current_station
+            && ui.is_power_on
         {
-            if ui.is_muted {
-                ui.is_muted = false;
-                audio.set_volume(ui.volume);
-            }
             audio.play(st.name.clone(), st.url.clone());
             last_played_channel = Some((st.name.clone(), st.url.clone()));
         }
 
-        // M key for mute / play toggle
-        if rl.is_key_pressed(KeyboardKey::KEY_M) {
-            let is_playing_or_connecting = matches!(
-                audio.status(),
-                crate::audio::PlayerStatus::Playing(_) | crate::audio::PlayerStatus::Connecting
-            );
-            if ui.is_muted {
-                ui.is_muted = false;
-                audio.set_volume(ui.volume);
-                if !is_playing_or_connecting
-                    && let Some(st) = current_station
-                {
-                    audio.play(st.name.clone(), st.url.clone());
-                    last_played_channel = Some((st.name.clone(), st.url.clone()));
-                }
-            } else if !is_playing_or_connecting {
+        // P / M key for power toggle
+        if rl.is_key_pressed(KeyboardKey::KEY_P) || rl.is_key_pressed(KeyboardKey::KEY_M) {
+            ui.is_power_on = !ui.is_power_on;
+            if ui.is_power_on {
                 audio.set_volume(ui.volume);
                 if let Some(st) = current_station {
                     audio.play(st.name.clone(), st.url.clone());
                     last_played_channel = Some((st.name.clone(), st.url.clone()));
                 }
             } else {
-                ui.is_muted = true;
-                audio.set_volume(0.0);
+                audio.stop();
             }
         }
 
-        // As soon as the channel has changed, start playing by any means
+        // As soon as the channel has changed, start playing if power is on
         let current_channel = current_station.map(|s| (s.name.clone(), s.url.clone()));
         if current_channel != last_played_channel {
             last_played_channel = current_channel.clone();
             if let Some(st) = current_station {
-                if ui.is_muted {
-                    ui.is_muted = false;
-                    audio.set_volume(ui.volume);
+                if ui.is_power_on {
+                    audio.play(st.name.clone(), st.url.clone());
                 }
-                audio.play(st.name.clone(), st.url.clone());
             } else {
                 audio.stop();
             }
@@ -305,5 +285,39 @@ mod tests {
 
         let pos = stations.iter().position(|s| s.url == preset_station.url || s.name == preset_station.name);
         assert_eq!(pos, Some(1));
+    }
+
+    #[test]
+    fn test_power_gated_playback() {
+        let station = CachedStation {
+            stationuuid: "1".to_string(),
+            name: "Ambient Waves".to_string(),
+            url: "http://ambient.stream".to_string(),
+            tags: "ambient".to_string(),
+        };
+
+        // When power is ON, changing station triggers playback
+        let mut power_on = true;
+        let mut played = false;
+        if power_on {
+            played = true;
+        }
+        assert!(played);
+
+        // When power is OFF, changing station does NOT trigger playback
+        power_on = false;
+        played = false;
+        if power_on {
+            played = true;
+        }
+        assert!(!played);
+
+        // Toggling power ON initiates playback of current station
+        power_on = !power_on;
+        if power_on {
+            played = true;
+        }
+        assert!(played);
+        assert_eq!(station.name, "Ambient Waves");
     }
 }

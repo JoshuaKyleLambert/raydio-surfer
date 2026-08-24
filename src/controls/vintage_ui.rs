@@ -26,7 +26,7 @@ pub struct VintageUiState {
     pub search_input: String,
     pub active_band: GenreBand,
     pub active_index: usize,
-    pub is_muted: bool,
+    pub is_power_on: bool,
     pub volume: f32,
     pub status_feedback: Option<(String, f32)>, // Feedback text and timer
     pub title_anim_offset: usize,
@@ -42,7 +42,7 @@ impl VintageUiState {
             search_input: String::with_capacity(32),
             active_band: GenreBand::All,
             active_index: 0,
-            is_muted: false,
+            is_power_on: true,
             volume: initial_volume,
             status_feedback: None,
             title_anim_offset: 0,
@@ -272,18 +272,20 @@ pub fn render_vintage_stereo(
             layout.font_display_small,
             COLOR_VFD_AMBER,
         );
+    } else if !ui.is_power_on {
+        d.draw_text(
+            "STATUS: [POWER OFF]",
+            disp_x,
+            status_y,
+            layout.font_display_small,
+            COLOR_VFD_CYAN_DIM,
+        );
     } else {
         let player_status = audio.status();
         let (status_str, status_color) = match player_status {
             PlayerStatus::Stopped => ("STATUS: [STOPPED]", COLOR_VFD_CYAN_DIM),
             PlayerStatus::Connecting => ("STATUS: [CONNECTING / BUFFERING...]", COLOR_VFD_AMBER),
-            PlayerStatus::Playing(_) => {
-                if ui.is_muted {
-                    ("STATUS: [MUTED]", COLOR_VFD_AMBER)
-                } else {
-                    ("STATUS: [LIVE BROADCASTING]", COLOR_VFD_CYAN_GLOW)
-                }
-            }
+            PlayerStatus::Playing(_) => ("STATUS: [LIVE BROADCASTING]", COLOR_VFD_CYAN_GLOW),
             PlayerStatus::Error(ref err) => (err.as_str(), COLOR_NEEDLE_RED),
         };
         d.draw_text(
@@ -295,33 +297,15 @@ pub fn render_vintage_stereo(
         );
     }
 
-    // 3. Draw Power / Mute / Play Button
-    let is_playing_or_connecting = matches!(
-        audio.status(),
-        PlayerStatus::Playing(_) | PlayerStatus::Connecting
-    );
-
-    let power_label = if ui.is_muted {
-        "#131#UNMUTE"
-    } else if !is_playing_or_connecting {
-        "#131#PLAY"
+    // 3. Draw Power Button
+    let power_label = if ui.is_power_on {
+        "#131#POWER ON"
     } else {
-        "#133#MUTE"
+        "#133#POWER OFF"
     };
     if d.gui_button(layout.power_btn_rect, power_label) {
-        if ui.is_muted {
-            ui.is_muted = false;
-            audio.set_volume(ui.volume);
-            if !is_playing_or_connecting
-                && active_filtered_count > 0
-                && !current_station_url.is_empty()
-            {
-                audio.play(
-                    current_station_name.to_string(),
-                    current_station_url.to_string(),
-                );
-            }
-        } else if !is_playing_or_connecting {
+        ui.is_power_on = !ui.is_power_on;
+        if ui.is_power_on {
             audio.set_volume(ui.volume);
             if active_filtered_count > 0 && !current_station_url.is_empty() {
                 audio.play(
@@ -330,8 +314,7 @@ pub fn render_vintage_stereo(
                 );
             }
         } else {
-            ui.is_muted = true;
-            audio.set_volume(0.0);
+            audio.stop();
         }
     }
 
@@ -345,7 +328,7 @@ pub fn render_vintage_stereo(
     );
     let prev_vol = ui.volume;
     d.gui_slider(layout.vol_slider_rect, "", "", &mut ui.volume, 0.0, 1.0);
-    if (ui.volume - prev_vol).abs() > 0.01 && !ui.is_muted {
+    if (ui.volume - prev_vol).abs() > 0.01 {
         audio.set_volume(ui.volume);
     }
 
@@ -481,10 +464,6 @@ pub fn render_vintage_stereo(
         // Left Click -> Recall Preset
         if d.gui_button(preset_rect, &btn_label) {
             if let Some(st) = preset_station {
-                if ui.is_muted {
-                    ui.is_muted = false;
-                    audio.set_volume(ui.volume);
-                }
                 if let Some(all) = ctx.all_stations
                     && let Some(pos) = all.iter().position(|s| s.url == st.url || s.name == st.name)
                 {
@@ -492,7 +471,9 @@ pub fn render_vintage_stereo(
                     ui.search_input.clear();
                     ui.active_index = pos;
                 }
-                audio.play(st.name.clone(), st.url.clone());
+                if ui.is_power_on {
+                    audio.play(st.name.clone(), st.url.clone());
+                }
                 ui.status_feedback = Some((format!("Tuned to Preset [{}]", i + 1), 3.0));
             } else {
                 ui.status_feedback = Some((
@@ -519,14 +500,10 @@ pub fn render_vintage_stereo(
     }
 
     // 10. Quick Play/Pause Action: Space or Double-Click
-    if d.is_key_pressed(KeyboardKey::KEY_SPACE) && active_filtered_count > 0 {
+    if d.is_key_pressed(KeyboardKey::KEY_SPACE) && active_filtered_count > 0 && ui.is_power_on {
         match audio.status() {
             PlayerStatus::Playing(_) | PlayerStatus::Connecting => audio.stop(),
             _ => {
-                if ui.is_muted {
-                    ui.is_muted = false;
-                    audio.set_volume(ui.volume);
-                }
                 audio.play(
                     current_station_name.to_string(),
                     current_station_url.to_string(),
@@ -544,7 +521,7 @@ mod tests {
     fn test_vintage_ui_state_init() {
         let state = VintageUiState::new(0.75);
         assert_eq!(state.volume, 0.75);
-        assert!(!state.is_muted);
+        assert!(state.is_power_on);
         assert_eq!(state.active_band, GenreBand::All);
         assert_eq!(state.active_index, 0);
         assert!(state.search_input.is_empty());
