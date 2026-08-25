@@ -216,12 +216,14 @@ mod tests {
             name: "Station Alpha".to_string(),
             url: "http://stream.alpha.fm".to_string(),
             tags: "rock,classic".to_string(),
+            ..Default::default()
         };
         let station_b = CachedStation {
             stationuuid: "uuid-2".to_string(),
             name: "Station Beta".to_string(),
             url: "http://stream.beta.fm".to_string(),
             tags: "jazz,smooth".to_string(),
+            ..Default::default()
         };
 
         let mut last_played_channel: Option<(String, String)> = None;
@@ -267,12 +269,14 @@ mod tests {
                 name: "Rock Radio".to_string(),
                 url: "http://rock.com".to_string(),
                 tags: "rock".to_string(),
+                ..Default::default()
             },
             CachedStation {
                 stationuuid: "2".to_string(),
                 name: "Jazz Groove".to_string(),
                 url: "http://jazz.com".to_string(),
                 tags: "jazz".to_string(),
+                ..Default::default()
             },
         ];
 
@@ -281,6 +285,7 @@ mod tests {
             name: "Jazz Groove".to_string(),
             url: "http://jazz.com".to_string(),
             tags: "jazz".to_string(),
+            ..Default::default()
         };
 
         let pos = stations.iter().position(|s| s.url == preset_station.url || s.name == preset_station.name);
@@ -294,6 +299,7 @@ mod tests {
             name: "Ambient Waves".to_string(),
             url: "http://ambient.stream".to_string(),
             tags: "ambient".to_string(),
+            ..Default::default()
         };
 
         // When power is ON, changing station triggers playback

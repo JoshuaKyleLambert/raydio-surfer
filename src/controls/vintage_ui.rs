@@ -488,11 +488,16 @@ pub fn render_vintage_stereo(
             && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)
             && active_filtered_count > 0
         {
-            let st = CachedStation {
-                stationuuid: String::new(),
-                name: current_station_name.to_string(),
-                url: current_station_url.to_string(),
-                tags: String::new(),
+            let st = if let Some(current) = ctx.current_station {
+                current.clone()
+            } else {
+                CachedStation {
+                    stationuuid: String::new(),
+                    name: current_station_name.to_string(),
+                    url: current_station_url.to_string(),
+                    tags: String::new(),
+                    ..Default::default()
+                }
             };
             presets.set_preset(i, st);
             ui.status_feedback = Some((format!("Saved to Preset [{}]!", i + 1), 3.0));

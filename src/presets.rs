@@ -58,6 +58,7 @@ mod tests {
             name: "Ambient Sleep".into(),
             url: "http://sleep".into(),
             tags: "ambient".into(),
+            ..Default::default()
         };
 
         presets.set_preset(2, station.clone());

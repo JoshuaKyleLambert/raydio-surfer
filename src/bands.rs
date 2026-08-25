@@ -108,6 +108,10 @@ pub fn filter_by_band_and_search(
             }
             station.name.to_lowercase().contains(&search_lower)
                 || station.tags.to_lowercase().contains(&search_lower)
+                || station.country.to_lowercase().contains(&search_lower)
+                || station.countrycode.to_lowercase().contains(&search_lower)
+                || station.state.to_lowercase().contains(&search_lower)
+                || station.language.to_lowercase().contains(&search_lower)
                 || station.url.to_lowercase().contains(&search_lower)
         })
         .cloned()
@@ -125,6 +129,10 @@ mod tests {
             name: "Classic Rock 101".into(),
             url: "http://stream1".into(),
             tags: "classic rock,70s,guitar".into(),
+            country: "United States".into(),
+            countrycode: "US".into(),
+            state: "California".into(),
+            language: "english".into(),
         };
 
         let jazz_station = CachedStation {
@@ -132,6 +140,10 @@ mod tests {
             name: "Blue Note FM".into(),
             url: "http://stream2".into(),
             tags: "smooth jazz,relax".into(),
+            country: "United Kingdom".into(),
+            countrycode: "GB".into(),
+            state: "London".into(),
+            language: "english".into(),
         };
 
         assert!(GenreBand::Rock.matches(&rock_station));
@@ -139,5 +151,81 @@ mod tests {
         assert!(GenreBand::Jazz.matches(&jazz_station));
         assert!(GenreBand::All.matches(&rock_station));
         assert!(GenreBand::All.matches(&jazz_station));
+    }
+
+    #[test]
+    fn test_filter_by_band_and_search_criteria() {
+        let stations = vec![
+            CachedStation {
+                stationuuid: "1".into(),
+                name: "K-Rock FM".into(),
+                url: "http://krock".into(),
+                tags: "rock,alternative,grunge".into(),
+                country: "United States".into(),
+                countrycode: "US".into(),
+                state: "California".into(),
+                language: "english".into(),
+            },
+            CachedStation {
+                stationuuid: "2".into(),
+                name: "Berlin Chillout".into(),
+                url: "http://berlinchill".into(),
+                tags: "ambient,downtempo,chill".into(),
+                country: "Germany".into(),
+                countrycode: "DE".into(),
+                state: "Berlin".into(),
+                language: "german".into(),
+            },
+            CachedStation {
+                stationuuid: "3".into(),
+                name: "Tokyo Jazz Cafe".into(),
+                url: "http://tokyojazz".into(),
+                tags: "jazz,bebop".into(),
+                country: "Japan".into(),
+                countrycode: "JP".into(),
+                state: "Kanto".into(),
+                language: "japanese".into(),
+            },
+        ];
+
+        // Search by name
+        let by_name = filter_by_band_and_search(&stations, GenreBand::All, "K-Rock");
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].name, "K-Rock FM");
+
+        // Search by tag / genre
+        let by_tag = filter_by_band_and_search(&stations, GenreBand::All, "grunge");
+        assert_eq!(by_tag.len(), 1);
+        assert_eq!(by_tag[0].name, "K-Rock FM");
+
+        let by_genre = filter_by_band_and_search(&stations, GenreBand::All, "ambient");
+        assert_eq!(by_genre.len(), 1);
+        assert_eq!(by_genre[0].name, "Berlin Chillout");
+
+        // Search by country
+        let by_country = filter_by_band_and_search(&stations, GenreBand::All, "Germany");
+        assert_eq!(by_country.len(), 1);
+        assert_eq!(by_country[0].name, "Berlin Chillout");
+
+        // Search by location / state / countrycode
+        let by_state = filter_by_band_and_search(&stations, GenreBand::All, "Berlin");
+        assert_eq!(by_state.len(), 1);
+        assert_eq!(by_state[0].name, "Berlin Chillout");
+
+        let by_location = filter_by_band_and_search(&stations, GenreBand::All, "California");
+        assert_eq!(by_location.len(), 1);
+        assert_eq!(by_location[0].name, "K-Rock FM");
+
+        let by_code = filter_by_band_and_search(&stations, GenreBand::All, "JP");
+        assert_eq!(by_code.len(), 1);
+        assert_eq!(by_code[0].name, "Tokyo Jazz Cafe");
+
+        // Search combined with band filter
+        let by_band_and_search = filter_by_band_and_search(&stations, GenreBand::Rock, "California");
+        assert_eq!(by_band_and_search.len(), 1);
+        assert_eq!(by_band_and_search[0].name, "K-Rock FM");
+
+        let non_matching_band = filter_by_band_and_search(&stations, GenreBand::Jazz, "California");
+        assert!(non_matching_band.is_empty());
     }
 }
