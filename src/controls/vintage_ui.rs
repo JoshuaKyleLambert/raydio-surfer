@@ -34,6 +34,8 @@ pub struct VintageUiState {
     pub title_anim_timer: f32,
     pub title_anim_pause: f32,
     pub last_station_title: String,
+    pub is_loading: bool,
+    pub loading_timer: f32,
 }
 
 impl VintageUiState {
@@ -50,6 +52,8 @@ impl VintageUiState {
             title_anim_timer: 0.0,
             title_anim_pause: TITLE_ANIM_PAUSE_DURATION,
             last_station_title: String::new(),
+            is_loading: false,
+            loading_timer: 0.0,
         }
     }
 }
@@ -178,6 +182,13 @@ pub fn render_vintage_stereo(
     let active_filtered_count = ctx.active_filtered_count;
     let total_stations_count = ctx.total_stations_count;
 
+    let dt = d.get_frame_time();
+    if ui.is_loading {
+        ui.loading_timer += dt;
+    } else {
+        ui.loading_timer = 0.0;
+    }
+
     // 1. Draw outer chassis & bezel
     d.draw_rectangle_rounded(layout.bezel_rect, 0.04, 8, COLOR_CHASSIS_BG);
     d.draw_rectangle_rounded_lines(layout.bezel_rect, 0.04, 8, COLOR_BEZEL_OUTLINE);
@@ -187,17 +198,21 @@ pub fn render_vintage_stereo(
     d.draw_rectangle_rounded_lines(layout.display_rect, 0.06, 6, COLOR_VFD_GLASS_BORDER);
 
     // Display Top Line: Active Band + Live Scope Counter + Stereo Indicator
-    let scope_text = format!(
-        "BAND: [{}]  |  TUNED: {} / {} (TOTAL: {})",
-        ui.active_band.label(),
-        if active_filtered_count > 0 {
-            ui.active_index + 1
-        } else {
-            0
-        },
-        active_filtered_count,
-        total_stations_count
-    );
+    let scope_text = if ui.is_loading {
+        format!("BAND: [{}]  |  [SCANNING AIRWAVES...]", ui.active_band.label())
+    } else {
+        format!(
+            "BAND: [{}]  |  TUNED: {} / {} (TOTAL: {})",
+            ui.active_band.label(),
+            if active_filtered_count > 0 {
+                ui.active_index + 1
+            } else {
+                0
+            },
+            active_filtered_count,
+            total_stations_count
+        )
+    };
     let disp_x = (layout.display_rect.x + 12.0) as i32;
     let disp_y = (layout.display_rect.y + 8.0) as i32;
     d.draw_text(
@@ -205,7 +220,7 @@ pub fn render_vintage_stereo(
         disp_x,
         disp_y,
         layout.font_display_small,
-        COLOR_VFD_CYAN_DIM,
+        if ui.is_loading { COLOR_VFD_AMBER } else { COLOR_VFD_CYAN_DIM },
     );
 
     // Right-aligned STEREO badge
@@ -220,7 +235,15 @@ pub fn render_vintage_stereo(
     );
 
     // Display Middle Line: Station Title
-    let main_title = if active_filtered_count > 0 {
+    let main_title = if ui.is_loading && active_filtered_count == 0 {
+        let dots = (ui.loading_timer * 3.0) as usize % 4;
+        match dots {
+            0 => "SEARCHING AIRWAVES",
+            1 => "SEARCHING AIRWAVES .",
+            2 => "SEARCHING AIRWAVES . .",
+            _ => "SEARCHING AIRWAVES . . .",
+        }
+    } else if active_filtered_count > 0 {
         current_station_name
     } else {
         "NO STATIONS FOUND FOR SEARCH"
@@ -243,7 +266,6 @@ pub fn render_vintage_stereo(
         |s, size| d.measure_text(s, size),
     );
 
-    let dt = d.get_frame_time();
     update_title_animation(
         dt,
         max_offset,
@@ -280,6 +302,14 @@ pub fn render_vintage_stereo(
             layout.font_display_small,
             COLOR_VFD_CYAN_DIM,
         );
+    } else if ui.is_loading {
+        d.draw_text(
+            "STATUS: [QUERYING RADIO-BROWSER DIRECTORY...]",
+            disp_x,
+            status_y,
+            layout.font_display_small,
+            COLOR_VFD_AMBER,
+        );
     } else {
         let player_status = audio.status();
         let (status_str, status_color) = match player_status {
@@ -295,6 +325,21 @@ pub fn render_vintage_stereo(
             layout.font_display_small,
             status_color,
         );
+    }
+
+    // Oscillating vintage scanning beam across the bottom of the VFD glass when loading
+    if ui.is_loading {
+        let track_w = layout.display_rect.width - 24.0;
+        let scan_w = 60.0;
+        let phase = ((ui.loading_timer * 2.0).sin().abs()).clamp(0.0, 1.0);
+        let scan_x = layout.display_rect.x + 12.0 + phase * (track_w - scan_w);
+        let scan_rect = Rectangle::new(
+            scan_x,
+            layout.display_rect.y + layout.display_rect.height - 4.0,
+            scan_w,
+            2.0,
+        );
+        d.draw_rectangle_rec(scan_rect, COLOR_VFD_CYAN_GLOW);
     }
 
     // 3. Draw Power Button

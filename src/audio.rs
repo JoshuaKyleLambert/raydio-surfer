@@ -135,7 +135,7 @@ impl LiveStreamReader {
         }
 
         // Keep memory usage bounded while retaining a seeking window
-        const MAX_KEEP_BEHIND: u64 = 128 * 1024; // 128 KB history
+        const MAX_KEEP_BEHIND: u64 = 256 * 1024; // 256 KB history
         let current_rel = state.cursor_pos.saturating_sub(state.base_pos);
         if current_rel > MAX_KEEP_BEHIND {
             let to_prune = (current_rel - MAX_KEEP_BEHIND) as usize;
@@ -281,7 +281,8 @@ fn run_audio_worker(
 
                     runtime.block_on(async move {
                         let client = reqwest::Client::builder()
-                            .timeout(Duration::from_secs(12))
+                            .connect_timeout(Duration::from_secs(10))
+                            .user_agent("RaydioSurfer/1.0")
                             .build();
 
                         let client = match client {

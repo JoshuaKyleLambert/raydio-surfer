@@ -1,3 +1,4 @@
+use crate::api::StationLoader;
 use crate::audio::AudioController;
 use crate::bands::GenreBand;
 use crate::controls::vintage_ui::{VintageUiState, render_vintage_stereo};
@@ -17,9 +18,8 @@ mod presets;
 const BACKGROUND_COLOR: Color = Color::new(16, 16, 22, 255);
 
 fn main() {
-    let mut rb_api = RadioBrowserAPI::new().expect("Failed to create RadioBrowserAPI");
-    let all_stations = api::get_stations_with_cache(&mut rb_api);
-    let total_stations_count = all_stations.len();
+    let mut loader = StationLoader::new();
+    let initial_stations = loader.initial_stations();
 
     let audio = AudioController::new();
     let mut ui = VintageUiState::new(audio.volume());
@@ -27,8 +27,11 @@ fn main() {
 
     let mut last_search = ui.search_input.clone();
     let mut last_band = ui.active_band;
-    let mut active_stations =
-        bands::filter_by_band_and_search(&all_stations, ui.active_band, &ui.search_input);
+    let mut active_stations = if !initial_stations.is_empty() {
+        bands::filter_by_band_and_search(&initial_stations, ui.active_band, &ui.search_input)
+    } else {
+        Vec::new()
+    };
     let mut last_played_channel: Option<(String, String)> = None;
 
     let (mut rl, thread) = raylib::init()
@@ -43,22 +46,53 @@ fn main() {
 
     // Main responsive loop
     while !rl.window_should_close() {
+        let dt = rl.get_frame_time();
+
+        // Update loader debounce timer
+        loader.update(dt);
+
         // Feedback timer decay
         if let Some((_, ref mut timer)) = ui.status_feedback {
-            *timer -= rl.get_frame_time();
+            *timer -= dt;
             if *timer <= 0.0 {
                 ui.status_feedback = None;
             }
         }
 
         // Check if search query or genre band changed
-        if ui.search_input != last_search || ui.active_band != last_band {
-            active_stations =
-                bands::filter_by_band_and_search(&all_stations, ui.active_band, &ui.search_input);
+        let search_changed = ui.search_input != last_search;
+        let band_changed = ui.active_band != last_band;
+        if search_changed || band_changed {
+            let immediate = band_changed || rl.is_key_pressed(KeyboardKey::KEY_ENTER);
+            if let Some(cached) = loader.request_stations(ui.active_band, &ui.search_input, immediate) {
+                active_stations = cached;
+                ui.active_index = 0;
+            }
             last_search = ui.search_input.clone();
             last_band = ui.active_band;
-            ui.active_index = 0;
         }
+
+        // Poll for asynchronous background responses
+        if let Some(resp) = loader.poll_response()
+            && resp.band == ui.active_band
+            && resp.query.trim() == ui.search_input.trim()
+        {
+            let current_selected_url = if ui.active_index < active_stations.len() {
+                Some(active_stations[ui.active_index].url.clone())
+            } else {
+                None
+            };
+            active_stations = resp.stations;
+            if let Some(url) = current_selected_url
+                && let Some(pos) = active_stations.iter().position(|s| s.url == url)
+            {
+                ui.active_index = pos;
+            } else {
+                ui.active_index = 0;
+            }
+        }
+
+        ui.is_loading = loader.is_loading();
 
         // Keyboard Shortcuts
         // Number keys 1..=6 to recall presets
@@ -77,13 +111,19 @@ fn main() {
             {
                 if let Some(pos) = active_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
                     ui.active_index = pos;
-                } else if let Some(pos) = all_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
+                } else {
                     ui.active_band = GenreBand::All;
                     ui.search_input.clear();
-                    active_stations = bands::filter_by_band_and_search(&all_stations, ui.active_band, &ui.search_input);
-                    last_search = ui.search_input.clone();
-                    last_band = ui.active_band;
-                    ui.active_index = pos;
+                    last_search.clear();
+                    last_band = GenreBand::All;
+                    if let Some(cached) = loader.request_stations(GenreBand::All, "", true) {
+                        active_stations = cached;
+                        if let Some(pos) = active_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
+                            ui.active_index = pos;
+                        } else {
+                            ui.active_index = 0;
+                        }
+                    }
                 }
                 if ui.is_power_on {
                     audio.play(st.name.clone(), st.url.clone());
@@ -91,6 +131,15 @@ fn main() {
                 last_played_channel = Some((st.name.clone(), st.url.clone()));
                 ui.status_feedback = Some((format!("Tuned to Preset [{}]", i + 1), 3.0));
             }
+        }
+
+        // Enter key immediate search query submission
+        if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+            && !ui.search_input.is_empty()
+            && let Some(cached) = loader.request_stations(ui.active_band, &ui.search_input, true)
+        {
+            active_stations = cached;
+            ui.active_index = 0;
         }
 
         // Arrow keys for tuning
@@ -160,11 +209,12 @@ fn main() {
         let screen_h = d.get_screen_height() as f32;
         let layout = StereoLayout::compute(screen_w, screen_h, GenreBand::ALL_BANDS.len());
 
+        let total_stations_count = loader.total_cached_count().max(active_stations.len());
         let ctx = controls::vintage_ui::StationViewContext {
             total_stations_count,
             active_filtered_count: active_stations.len(),
             current_station,
-            all_stations: Some(&all_stations),
+            all_stations: None,
         };
 
         render_vintage_stereo(&mut d, &layout, &mut ui, &mut presets, &audio, ctx);
@@ -325,5 +375,59 @@ mod tests {
         }
         assert!(played);
         assert_eq!(station.name, "Ambient Waves");
+    }
+
+    #[test]
+    fn test_background_response_preserves_active_station_selection() {
+        let initial_stations = vec![
+            CachedStation {
+                stationuuid: "1".to_string(),
+                name: "Station A".to_string(),
+                url: "http://station-a.com".to_string(),
+                ..Default::default()
+            },
+            CachedStation {
+                stationuuid: "2".to_string(),
+                name: "Station B".to_string(),
+                url: "http://station-b.com".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let mut active_index = 1; // Playing/selected Station B
+        let current_selected_url = Some(initial_stations[active_index].url.clone());
+
+        // Background query returns updated list with Station B in a different position
+        let updated_stations = vec![
+            CachedStation {
+                stationuuid: "3".to_string(),
+                name: "Station C".to_string(),
+                url: "http://station-c.com".to_string(),
+                ..Default::default()
+            },
+            CachedStation {
+                stationuuid: "2".to_string(),
+                name: "Station B".to_string(),
+                url: "http://station-b.com".to_string(),
+                ..Default::default()
+            },
+            CachedStation {
+                stationuuid: "1".to_string(),
+                name: "Station A".to_string(),
+                url: "http://station-a.com".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        if let Some(url) = current_selected_url
+            && let Some(pos) = updated_stations.iter().position(|s| s.url == url)
+        {
+            active_index = pos;
+        } else {
+            active_index = 0;
+        }
+
+        assert_eq!(active_index, 1);
+        assert_eq!(updated_stations[active_index].name, "Station B");
     }
 }

@@ -1,6 +1,6 @@
 use crate::api::CachedStation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GenreBand {
     All,
     Rock,
@@ -40,6 +40,38 @@ impl GenreBand {
         }
     }
 
+    pub fn keywords(&self) -> &'static [&'static str] {
+        match self {
+            GenreBand::All => &[],
+            GenreBand::Rock => &["rock", "metal", "punk", "indie", "guitar", "alt"],
+            GenreBand::Jazz => &["jazz", "blues", "soul", "funk", "smooth"],
+            GenreBand::Electro => &[
+                "electro",
+                "synth",
+                "dance",
+                "edm",
+                "techno",
+                "house",
+                "trance",
+                "vaporwave",
+                "chillwave",
+                "club",
+            ],
+            GenreBand::Pop => &["pop", "top40", "hits", "chart"],
+            GenreBand::Classic => &["classic", "classical", "orchestra", "symphon", "opera", "baroque"],
+            GenreBand::Ambient => &[
+                "ambient",
+                "chill",
+                "relax",
+                "meditat",
+                "lounge",
+                "downtempo",
+            ],
+            GenreBand::News => &["news", "talk", "npr", "bbc", "politics", "sport"],
+            GenreBand::Retro => &["80s", "90s", "70s", "retro", "disco", "oldies", "vintage"],
+        }
+    }
+
     pub fn matches(&self, station: &CachedStation) -> bool {
         if matches!(self, GenreBand::All) {
             return true;
@@ -56,36 +88,14 @@ impl GenreBand {
 
         match self {
             GenreBand::All => true,
-            GenreBand::Rock => match_any(&["rock", "metal", "punk", "indie", "guitar", "alt"]),
-            GenreBand::Jazz => match_any(&["jazz", "blues", "soul", "funk", "smooth"]),
-            GenreBand::Electro => match_any(&[
-                "electro",
-                "synth",
-                "dance",
-                "edm",
-                "techno",
-                "house",
-                "trance",
-                "vaporwave",
-                "chillwave",
-                "club",
-            ]),
-            GenreBand::Pop => match_any(&["pop", "top40", "hits", "chart"]),
-            GenreBand::Classic => {
-                match_any(&["classic", "orchestra", "symphon", "opera", "baroque"])
-            }
-            GenreBand::Ambient => match_any(&[
-                "ambient",
-                "chill",
-                "relax",
-                "meditat",
-                "lounge",
-                "downtempo",
-            ]),
-            GenreBand::News => match_any(&["news", "talk", "npr", "bbc", "politics", "sport"]),
-            GenreBand::Retro => {
-                match_any(&["80s", "90s", "70s", "retro", "disco", "oldies", "vintage"])
-            }
+            GenreBand::Rock => match_any(self.keywords()),
+            GenreBand::Jazz => match_any(self.keywords()),
+            GenreBand::Electro => match_any(self.keywords()),
+            GenreBand::Pop => match_any(self.keywords()),
+            GenreBand::Classic => match_any(self.keywords()),
+            GenreBand::Ambient => match_any(self.keywords()),
+            GenreBand::News => match_any(self.keywords()),
+            GenreBand::Retro => match_any(self.keywords()),
         }
     }
 }
