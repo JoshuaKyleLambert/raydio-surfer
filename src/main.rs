@@ -75,7 +75,7 @@ fn main() {
         // Poll for asynchronous background responses
         if let Some(resp) = loader.poll_response()
             && resp.band == ui.active_band
-            && resp.query.trim() == ui.search_input.trim()
+            && resp.query.trim().to_lowercase() == ui.search_input.trim().to_lowercase()
         {
             let current_selected_url = if ui.active_index < active_stations.len() {
                 Some(active_stations[ui.active_index].url.clone())

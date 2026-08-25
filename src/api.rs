@@ -109,9 +109,37 @@ pub fn fetch_remote_stations(
     band: GenreBand,
     query: &str,
 ) -> Vec<CachedStation> {
-    let query_trimmed = query.trim();
+    let query_lower = query.trim().to_lowercase();
 
-    if query_trimmed.is_empty() {
+    let mut collected: Vec<CachedStation> = Vec::new();
+    let mut seen_uuids = std::collections::HashSet::new();
+
+    fn append_stations(
+        api_stations: Vec<ApiStation>,
+        band: GenreBand,
+        seen_uuids: &mut std::collections::HashSet<String>,
+        collected: &mut Vec<CachedStation>,
+    ) {
+        for s in api_stations {
+            if seen_uuids.insert(s.stationuuid.clone()) {
+                let st = CachedStation {
+                    stationuuid: s.stationuuid,
+                    name: s.name,
+                    url: s.url,
+                    tags: s.tags,
+                    country: s.country,
+                    countrycode: s.countrycode,
+                    state: s.state,
+                    language: s.language,
+                };
+                if band.matches(&st) {
+                    collected.push(st);
+                }
+            }
+        }
+    }
+
+    if query_lower.is_empty() {
         if matches!(band, GenreBand::All) {
             if let Ok(res) = api
                 .get_stations()
@@ -124,25 +152,43 @@ pub fn fetch_remote_stations(
                 return map_api_stations(res);
             }
         } else {
-            let keywords = band.keywords().to_vec();
-            if !keywords.is_empty()
-                && let Ok(res) = api
+            // For specific genre bands, query by tag and name for each lowercased keyword
+            for &kw in band.keywords() {
+                let kw_lower = kw.to_lowercase();
+                if let Ok(res) = api
                     .get_stations()
-                    .tag_list(keywords)
+                    .tag(&kw_lower)
                     .limit(MAX_STATIONS_LIMIT)
                     .hidebroken(true)
                     .order(StationOrder::Clickcount)
                     .reverse(true)
                     .send()
-            {
-                let mapped = map_api_stations(res);
-                let filtered: Vec<CachedStation> = mapped
-                    .into_iter()
-                    .filter(|st| band.matches(st))
-                    .collect();
-                if !filtered.is_empty() {
-                    return filtered;
+                {
+                    append_stations(res, band, &mut seen_uuids, &mut collected);
                 }
+
+                if let Ok(res) = api
+                    .get_stations()
+                    .name(&kw_lower)
+                    .limit(MAX_STATIONS_LIMIT)
+                    .hidebroken(true)
+                    .order(StationOrder::Clickcount)
+                    .reverse(true)
+                    .send()
+                {
+                    append_stations(res, band, &mut seen_uuids, &mut collected);
+                }
+
+                if collected.len() >= 5000 {
+                    break;
+                }
+            }
+
+            if !collected.is_empty() {
+                if collected.len() > 5000 {
+                    collected.truncate(5000);
+                }
+                return collected;
             }
 
             // Fallback: general query filtered by band
@@ -162,87 +208,64 @@ pub fn fetch_remote_stations(
     }
 
     // Non-empty query: search across name, tag, country, state, language on live API
-    let mut collected: Vec<CachedStation> = Vec::new();
-    let mut seen_uuids = std::collections::HashSet::new();
-
-    let mut add_results = |api_stations: Vec<ApiStation>| {
-        for s in api_stations {
-            if seen_uuids.insert(s.stationuuid.clone()) {
-                let st = CachedStation {
-                    stationuuid: s.stationuuid,
-                    name: s.name,
-                    url: s.url,
-                    tags: s.tags,
-                    country: s.country,
-                    countrycode: s.countrycode,
-                    state: s.state,
-                    language: s.language,
-                };
-                if band.matches(&st) {
-                    collected.push(st);
-                }
-            }
-        }
-    };
-
     if let Ok(res) = api
         .get_stations()
-        .name(query_trimmed)
+        .name(&query_lower)
         .limit(MAX_STATIONS_LIMIT)
         .hidebroken(true)
         .order(StationOrder::Clickcount)
         .reverse(true)
         .send()
     {
-        add_results(res);
+        append_stations(res, band, &mut seen_uuids, &mut collected);
     }
 
     if let Ok(res) = api
         .get_stations()
-        .tag(query_trimmed)
+        .tag(&query_lower)
         .limit(MAX_STATIONS_LIMIT)
         .hidebroken(true)
         .order(StationOrder::Clickcount)
         .reverse(true)
         .send()
     {
-        add_results(res);
+        append_stations(res, band, &mut seen_uuids, &mut collected);
     }
 
     if let Ok(res) = api
         .get_stations()
-        .country(query_trimmed)
+        .country(&query_lower)
         .limit(MAX_STATIONS_LIMIT)
         .hidebroken(true)
         .order(StationOrder::Clickcount)
         .reverse(true)
         .send()
     {
-        add_results(res);
+        append_stations(res, band, &mut seen_uuids, &mut collected);
     }
 
     if let Ok(res) = api
         .get_stations()
-        .state(query_trimmed)
+        .state(&query_lower)
         .limit(MAX_STATIONS_LIMIT)
         .hidebroken(true)
         .order(StationOrder::Clickcount)
         .reverse(true)
         .send()
     {
-        add_results(res);
+        append_stations(res, band, &mut seen_uuids, &mut collected);
     }
 
     if let Ok(res) = api
         .get_stations()
-        .language(query_trimmed)
+        .language(&query_lower)
         .limit(MAX_STATIONS_LIMIT)
         .hidebroken(true)
         .order(StationOrder::Clickcount)
         .reverse(true)
         .send()
     {
-        add_results(res);
+        append_stations(res, band, &mut seen_uuids, &mut collected);
     }
 
     if collected.len() > 5000 {
@@ -362,9 +385,9 @@ impl StationLoader {
         query: &str,
         immediate: bool,
     ) -> Option<Vec<CachedStation>> {
-        let query_trimmed = query.trim();
+        let query_lower = query.trim().to_lowercase();
 
-        if query_trimmed.is_empty() {
+        if query_lower.is_empty() {
             self.pending_request = None;
             self.debounce_timer = 0.0;
 
@@ -377,7 +400,7 @@ impl StationLoader {
             return None;
         }
 
-        let key = (band, query_trimmed.to_string());
+        let key = (band, query_lower.clone());
         if let Some(cached) = self.search_cache.get(&key) {
             self.pending_request = None;
             self.debounce_timer = 0.0;
@@ -388,9 +411,9 @@ impl StationLoader {
         if immediate {
             self.pending_request = None;
             self.debounce_timer = 0.0;
-            self.fetch_remote(band, query_trimmed);
+            self.fetch_remote(band, &query_lower);
         } else {
-            self.pending_request = Some((band, query_trimmed.to_string()));
+            self.pending_request = Some((band, query_lower));
             self.debounce_timer = 0.35; // 350ms debounce
             self.is_loading = true;
         }
@@ -410,8 +433,8 @@ impl StationLoader {
     }
 
     pub fn handle_response(&mut self, resp: FetchResponse) {
-        let trimmed_query = resp.query.trim().to_string();
-        if trimmed_query.is_empty() {
+        let query_lower = resp.query.trim().to_lowercase();
+        if query_lower.is_empty() {
             if matches!(resp.band, GenreBand::All) && !resp.stations.is_empty() {
                 self.all_stations_snapshot = resp.stations.clone();
                 save_stations_to_cache(&resp.stations);
@@ -419,7 +442,7 @@ impl StationLoader {
             self.band_cache.insert(resp.band, resp.stations);
         } else {
             self.search_cache
-                .insert((resp.band, trimmed_query), resp.stations);
+                .insert((resp.band, query_lower), resp.stations);
         }
         self.is_loading = false;
     }
@@ -443,7 +466,7 @@ impl StationLoader {
     #[allow(dead_code)]
     pub fn insert_search_cache(&mut self, band: GenreBand, query: &str, stations: Vec<CachedStation>) {
         self.search_cache
-            .insert((band, query.trim().to_string()), stations);
+            .insert((band, query.trim().to_lowercase()), stations);
     }
 }
 
@@ -606,7 +629,16 @@ mod tests {
 
         // Subsequent query for "tokyo" retrieves from memory cache immediately
         let cached = loader.request_stations(GenreBand::All, "tokyo", false);
-        assert_eq!(cached, Some(sample_stations));
+        assert_eq!(cached, Some(sample_stations.clone()));
+        assert!(!loader.is_loading());
+
+        // Case-insensitive check: "TOKYO" or "Tokyo" should hit the same cache
+        let cached_upper = loader.request_stations(GenreBand::All, "TOKYO", false);
+        assert_eq!(cached_upper, Some(sample_stations.clone()));
+        assert!(!loader.is_loading());
+
+        let cached_mixed = loader.request_stations(GenreBand::All, "  Tokyo  ", false);
+        assert_eq!(cached_mixed, Some(sample_stations));
         assert!(!loader.is_loading());
     }
 
