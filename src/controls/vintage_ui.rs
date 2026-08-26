@@ -37,6 +37,7 @@ pub struct VintageUiState {
     pub last_station_title: String,
     pub is_loading: bool,
     pub loading_timer: f32,
+    pub requested_preset: Option<usize>,
 }
 
 impl VintageUiState {
@@ -56,6 +57,7 @@ impl VintageUiState {
             last_station_title: String::new(),
             is_loading: false,
             loading_timer: 0.0,
+            requested_preset: None,
         }
     }
 }
@@ -168,7 +170,6 @@ pub struct StationViewContext<'a> {
     pub total_stations_count: usize,
     pub active_filtered_count: usize,
     pub current_station: Option<&'a CachedStation>,
-    pub all_stations: Option<&'a [CachedStation]>,
 }
 
 pub fn render_vintage_stereo(
@@ -539,19 +540,8 @@ pub fn render_vintage_stereo(
 
         // Left Click -> Recall Preset
         if d.gui_button(preset_rect, &btn_label) {
-            if let Some(st) = preset_station {
-                if let Some(all) = ctx.all_stations
-                    && let Some(pos) = all.iter().position(|s| s.url == st.url || s.name == st.name)
-                {
-                    ui.active_band_idx = 0;
-                    ui.active_band = GenreBand::All;
-                    ui.search_input.clear();
-                    ui.active_index = pos;
-                }
-                if ui.is_power_on {
-                    audio.play(st.name.clone(), st.url.clone());
-                }
-                ui.status_feedback = Some((format!("Tuned to Preset [{}]", i + 1), 3.0));
+            if preset_station.is_some() {
+                ui.requested_preset = Some(i);
             } else {
                 ui.status_feedback = Some((
                     format!("Preset [{}] is empty. Right-click to save.", i + 1),
@@ -612,6 +602,7 @@ mod tests {
         assert_eq!(state.title_anim_offset, 0);
         assert_eq!(state.title_anim_direction, 1);
         assert_eq!(state.title_anim_pause, TITLE_ANIM_PAUSE_DURATION);
+        assert_eq!(state.requested_preset, None);
     }
 
     #[test]

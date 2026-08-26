@@ -1,4 +1,4 @@
-use crate::api::StationLoader;
+use crate::api::{CachedStation, StationLoader};
 use crate::audio::AudioController;
 use crate::bands::GenreBand;
 use crate::controls::vintage_ui::{VintageUiState, render_vintage_stereo};
@@ -97,8 +97,8 @@ fn main() {
 
         ui.is_loading = loader.is_loading();
 
-        // Keyboard Shortcuts
-        // Number keys 1..=6 to recall presets
+        // Preset Recall (via GUI click or Number keys 1..=6)
+        let mut preset_to_recall = ui.requested_preset.take();
         for i in 0..6 {
             let key = match i {
                 0 => KeyboardKey::KEY_ONE,
@@ -109,32 +109,24 @@ fn main() {
                 5 => KeyboardKey::KEY_SIX,
                 _ => unreachable!(),
             };
-            if rl.is_key_pressed(key)
-                && let Some(st) = settings.get_preset(i)
-            {
-                if let Some(pos) = active_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
-                    ui.active_index = pos;
-                } else {
-                    ui.active_band_idx = 0;
-                    ui.active_band = GenreBand::All;
-                    ui.search_input.clear();
-                    last_search.clear();
-                    last_band_idx = 0;
-                    if let Some(cached) = loader.request_stations(GenreBand::All, "", true) {
-                        active_stations = cached;
-                        if let Some(pos) = active_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
-                            ui.active_index = pos;
-                        } else {
-                            ui.active_index = 0;
-                        }
-                    }
-                }
-                if ui.is_power_on {
-                    audio.play(st.name.clone(), st.url.clone());
-                }
-                last_played_channel = Some((st.name.clone(), st.url.clone()));
-                ui.status_feedback = Some((format!("Tuned to Preset [{}]", i + 1), 3.0));
+            if rl.is_key_pressed(key) {
+                preset_to_recall = Some(i);
+                break;
             }
+        }
+
+        if let Some(idx) = preset_to_recall {
+            let mut ctx = PresetTuneContext {
+                settings: &settings,
+                ui: &mut ui,
+                active_stations: &mut active_stations,
+                loader: &mut loader,
+                last_search: &mut last_search,
+                last_band_idx: &mut last_band_idx,
+                audio: &audio,
+                last_played_channel: &mut last_played_channel,
+            };
+            tune_to_preset(idx, &mut ctx);
         }
 
         // Enter key immediate search query submission
@@ -218,10 +210,56 @@ fn main() {
             total_stations_count,
             active_filtered_count: active_stations.len(),
             current_station,
-            all_stations: None,
         };
 
         render_vintage_stereo(&mut d, &layout, &mut ui, &mut settings, &audio, ctx);
+    }
+}
+
+pub struct PresetTuneContext<'a> {
+    pub settings: &'a Settings,
+    pub ui: &'a mut VintageUiState,
+    pub active_stations: &'a mut Vec<CachedStation>,
+    pub loader: &'a mut StationLoader,
+    pub last_search: &'a mut String,
+    pub last_band_idx: &'a mut usize,
+    pub audio: &'a AudioController,
+    pub last_played_channel: &'a mut Option<(String, String)>,
+}
+
+pub fn tune_to_preset(preset_idx: usize, ctx: &mut PresetTuneContext<'_>) {
+    if let Some(st) = ctx.settings.get_preset(preset_idx) {
+        if let Some(pos) = ctx
+            .active_stations
+            .iter()
+            .position(|s| s.url == st.url || s.name == st.name)
+        {
+            ctx.ui.active_index = pos;
+        } else {
+            ctx.ui.active_band_idx = 0;
+            ctx.ui.active_band = GenreBand::All;
+            ctx.ui.search_input.clear();
+            *ctx.last_search = String::new();
+            *ctx.last_band_idx = 0;
+            if let Some(cached) = ctx.loader.request_stations(GenreBand::All, "", true) {
+                *ctx.active_stations = cached;
+            }
+            if let Some(pos) = ctx
+                .active_stations
+                .iter()
+                .position(|s| s.url == st.url || s.name == st.name)
+            {
+                ctx.ui.active_index = pos;
+            } else {
+                ctx.active_stations.insert(0, st.clone());
+                ctx.ui.active_index = 0;
+            }
+        }
+        if ctx.ui.is_power_on {
+            ctx.audio.play(st.name.clone(), st.url.clone());
+        }
+        *ctx.last_played_channel = Some((st.name.clone(), st.url.clone()));
+        ctx.ui.status_feedback = Some((format!("Tuned to Preset [{}]", preset_idx + 1), 3.0));
     }
 }
 
@@ -243,6 +281,7 @@ fn _get_stations() -> Option<Vec<ApiStation>> {
 // This attribute tells the compiler to only build this module when running tests
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::api::CachedStation;
     use crate::settings::Settings;
 
@@ -490,5 +529,121 @@ mod tests {
         let band4 = settings.get_band(3).unwrap();
         assert_eq!(band4.label, "ALL");
         assert_eq!(band4.query, "");
+    }
+
+    #[test]
+    fn test_tune_to_preset_when_in_active_stations() {
+        let mut settings = Settings::default();
+        let station_1 = CachedStation {
+            stationuuid: "u1".to_string(),
+            name: "Alpha Rock".to_string(),
+            url: "http://alpha.rock".to_string(),
+            tags: "rock".to_string(),
+            ..Default::default()
+        };
+        let station_2 = CachedStation {
+            stationuuid: "u2".to_string(),
+            name: "Beta Jazz".to_string(),
+            url: "http://beta.jazz".to_string(),
+            tags: "jazz".to_string(),
+            ..Default::default()
+        };
+        settings.set_preset(0, station_2.clone());
+
+        let mut ui = crate::controls::vintage_ui::VintageUiState::new(0.75);
+        ui.active_index = 0; // currently on station_1
+        let mut active_stations = vec![station_1.clone(), station_2.clone()];
+        let mut loader = crate::api::StationLoader::new();
+        let mut last_search = String::new();
+        let mut last_band_idx = 0;
+        let audio = crate::audio::AudioController::new();
+        let mut last_played_channel = None;
+
+        let mut ctx = PresetTuneContext {
+            settings: &settings,
+            ui: &mut ui,
+            active_stations: &mut active_stations,
+            loader: &mut loader,
+            last_search: &mut last_search,
+            last_band_idx: &mut last_band_idx,
+            audio: &audio,
+            last_played_channel: &mut last_played_channel,
+        };
+        tune_to_preset(0, &mut ctx);
+
+        // Display index must update to station_2 (index 1)
+        assert_eq!(ui.active_index, 1);
+        assert_eq!(active_stations[ui.active_index].name, "Beta Jazz");
+        assert_eq!(
+            last_played_channel,
+            Some(("Beta Jazz".to_string(), "http://beta.jazz".to_string()))
+        );
+        assert!(ui.status_feedback.is_some());
+    }
+
+    #[test]
+    fn test_tune_to_preset_when_not_in_active_stations() {
+        let mut settings = Settings::default();
+        let preset_st = CachedStation {
+            stationuuid: "upreset".to_string(),
+            name: "Gamma Synth".to_string(),
+            url: "http://gamma.synth".to_string(),
+            tags: "synth".to_string(),
+            ..Default::default()
+        };
+        settings.set_preset(1, preset_st.clone());
+
+        let mut ui = crate::controls::vintage_ui::VintageUiState::new(0.75);
+        ui.search_input = "classical".to_string();
+        ui.active_band_idx = 4;
+        let mut active_stations = vec![CachedStation {
+            stationuuid: "uother".to_string(),
+            name: "Classical 1".to_string(),
+            url: "http://classical.fm".to_string(),
+            tags: "classical".to_string(),
+            ..Default::default()
+        }];
+        let mut loader = crate::api::StationLoader::new();
+        let mut last_search = "classical".to_string();
+        let mut last_band_idx = 4;
+        let audio = crate::audio::AudioController::new();
+        let mut last_played_channel = None;
+
+        let mut ctx = PresetTuneContext {
+            settings: &settings,
+            ui: &mut ui,
+            active_stations: &mut active_stations,
+            loader: &mut loader,
+            last_search: &mut last_search,
+            last_band_idx: &mut last_band_idx,
+            audio: &audio,
+            last_played_channel: &mut last_played_channel,
+        };
+        tune_to_preset(1, &mut ctx);
+
+        // Should reset search & band to ALL, and station at active_index must be the preset
+        assert_eq!(ui.search_input, "");
+        assert_eq!(ui.active_band_idx, 0);
+        assert_eq!(active_stations[ui.active_index].name, "Gamma Synth");
+        assert_eq!(active_stations[ui.active_index].url, "http://gamma.synth");
+        assert_eq!(
+            last_played_channel,
+            Some(("Gamma Synth".to_string(), "http://gamma.synth".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_gui_requested_preset_flow() {
+        let mut ui = crate::controls::vintage_ui::VintageUiState::new(0.75);
+        assert_eq!(ui.requested_preset, None);
+
+        // Simulate GUI preset button 3 clicked (0-indexed 2)
+        ui.requested_preset = Some(2);
+        assert_eq!(ui.requested_preset, Some(2));
+
+        // Frame loop takes the preset request
+        let preset_to_recall = ui.requested_preset.take();
+        assert_eq!(preset_to_recall, Some(2));
+        assert_eq!(ui.requested_preset, None);
     }
 }
