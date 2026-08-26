@@ -3,3 +3,5 @@
 /.idea/
 stations_cache.json
 presets.json
+bands.json
+settings.json

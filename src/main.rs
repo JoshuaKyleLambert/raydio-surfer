@@ -3,7 +3,7 @@ use crate::audio::AudioController;
 use crate::bands::GenreBand;
 use crate::controls::vintage_ui::{VintageUiState, render_vintage_stereo};
 use crate::layout::StereoLayout;
-use crate::presets::Presets;
+use crate::settings::Settings;
 use radiobrowser::{ApiStation, ApiTag, blocking::RadioBrowserAPI};
 use raylib::prelude::*;
 
@@ -13,6 +13,7 @@ mod bands;
 mod controls;
 mod layout;
 mod presets;
+mod settings;
 
 // Background color for the window
 const BACKGROUND_COLOR: Color = Color::new(16, 16, 22, 255);
@@ -21,12 +22,14 @@ fn main() {
     let mut loader = StationLoader::new();
     let initial_stations = loader.initial_stations();
 
+    let mut settings = Settings::load();
+
     let audio = AudioController::new();
-    let mut ui = VintageUiState::new(audio.volume());
-    let mut presets = Presets::load();
+    audio.set_volume(settings.volume);
+    let mut ui = VintageUiState::new(settings.volume);
 
     let mut last_search = ui.search_input.clone();
-    let mut last_band = ui.active_band;
+    let mut last_band_idx = ui.active_band_idx;
     let mut active_stations = if !initial_stations.is_empty() {
         bands::filter_by_band_and_search(&initial_stations, ui.active_band, &ui.search_input)
     } else {
@@ -61,20 +64,19 @@ fn main() {
 
         // Check if search query or genre band changed
         let search_changed = ui.search_input != last_search;
-        let band_changed = ui.active_band != last_band;
+        let band_changed = ui.active_band_idx != last_band_idx;
         if search_changed || band_changed {
             let immediate = band_changed || rl.is_key_pressed(KeyboardKey::KEY_ENTER);
-            if let Some(cached) = loader.request_stations(ui.active_band, &ui.search_input, immediate) {
+            if let Some(cached) = loader.request_stations(GenreBand::All, &ui.search_input, immediate) {
                 active_stations = cached;
                 ui.active_index = 0;
             }
             last_search = ui.search_input.clone();
-            last_band = ui.active_band;
+            last_band_idx = ui.active_band_idx;
         }
 
         // Poll for asynchronous background responses
         if let Some(resp) = loader.poll_response()
-            && resp.band == ui.active_band
             && resp.query.trim().to_lowercase() == ui.search_input.trim().to_lowercase()
         {
             let current_selected_url = if ui.active_index < active_stations.len() {
@@ -107,15 +109,16 @@ fn main() {
                 _ => unreachable!(),
             };
             if rl.is_key_pressed(key)
-                && let Some(st) = presets.get_preset(i)
+                && let Some(st) = settings.get_preset(i)
             {
                 if let Some(pos) = active_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
                     ui.active_index = pos;
                 } else {
+                    ui.active_band_idx = 0;
                     ui.active_band = GenreBand::All;
                     ui.search_input.clear();
                     last_search.clear();
-                    last_band = GenreBand::All;
+                    last_band_idx = 0;
                     if let Some(cached) = loader.request_stations(GenreBand::All, "", true) {
                         active_stations = cached;
                         if let Some(pos) = active_stations.iter().position(|s| s.url == st.url || s.name == st.name) {
@@ -136,7 +139,7 @@ fn main() {
         // Enter key immediate search query submission
         if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
             && !ui.search_input.is_empty()
-            && let Some(cached) = loader.request_stations(ui.active_band, &ui.search_input, true)
+            && let Some(cached) = loader.request_stations(GenreBand::All, &ui.search_input, true)
         {
             active_stations = cached;
             ui.active_index = 0;
@@ -207,7 +210,7 @@ fn main() {
         // Dynamically compute responsive layout from current screen dimensions
         let screen_w = d.get_screen_width() as f32;
         let screen_h = d.get_screen_height() as f32;
-        let layout = StereoLayout::compute(screen_w, screen_h, GenreBand::ALL_BANDS.len());
+        let layout = StereoLayout::compute(screen_w, screen_h, settings.bands.slots.len());
 
         let total_stations_count = loader.total_cached_count().max(active_stations.len());
         let ctx = controls::vintage_ui::StationViewContext {
@@ -217,7 +220,7 @@ fn main() {
             all_stations: None,
         };
 
-        render_vintage_stereo(&mut d, &layout, &mut ui, &mut presets, &audio, ctx);
+        render_vintage_stereo(&mut d, &layout, &mut ui, &mut settings, &audio, ctx);
     }
 }
 
@@ -240,6 +243,7 @@ fn _get_stations() -> Option<Vec<ApiStation>> {
 #[cfg(test)]
 mod tests {
     use crate::api::CachedStation;
+    use crate::settings::Settings;
 
     #[test]
     fn test_environment_initialization() {
@@ -429,5 +433,61 @@ mod tests {
 
         assert_eq!(active_index, 1);
         assert_eq!(updated_stations[active_index].name, "Station B");
+    }
+
+    #[test]
+    fn test_volume_settings_persistence() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.volume, crate::settings::DEFAULT_VOLUME);
+
+        // Adjust volume
+        settings.volume = 0.42;
+        assert_eq!(settings.volume, 0.42);
+
+        // Test clamping
+        let test_clamp = |v: f32| v.clamp(0.0, 1.0);
+        assert_eq!(test_clamp(1.5), 1.0);
+        assert_eq!(test_clamp(-0.5), 0.0);
+        assert_eq!(test_clamp(0.65), 0.65);
+    }
+
+    #[test]
+    fn test_band_slots_and_right_click_search_assignment() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.bands.slots.len(), 9);
+        assert_eq!(settings.get_band(0).unwrap().label, "ALL");
+        assert_eq!(settings.get_band(1).unwrap().label, "ROCK");
+
+        // Simulate right-clicking Band button #3 (index 2) with search query "Synthwave"
+        let search_term = "  Synthwave  ";
+        let trimmed = search_term.trim();
+        let label = if trimmed.is_empty() {
+            "ALL".to_string()
+        } else {
+            trimmed.chars().take(10).collect::<String>().to_uppercase()
+        };
+        settings.bands.slots[2] = crate::bands::BandSlot {
+            label,
+            query: trimmed.to_string(),
+        };
+        let band3 = settings.get_band(2).unwrap();
+        assert_eq!(band3.label, "SYNTHWAVE");
+        assert_eq!(band3.query, "Synthwave");
+
+        // Simulate right-clicking Band button #4 (index 3) with empty search query
+        let empty_term = "";
+        let trimmed_empty = empty_term.trim();
+        let label_empty = if trimmed_empty.is_empty() {
+            "ALL".to_string()
+        } else {
+            trimmed_empty.chars().take(10).collect::<String>().to_uppercase()
+        };
+        settings.bands.slots[3] = crate::bands::BandSlot {
+            label: label_empty,
+            query: trimmed_empty.to_string(),
+        };
+        let band4 = settings.get_band(3).unwrap();
+        assert_eq!(band4.label, "ALL");
+        assert_eq!(band4.query, "");
     }
 }

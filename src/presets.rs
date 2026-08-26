@@ -1,37 +1,18 @@
 use crate::api::CachedStation;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
 
-const PRESETS_FILENAME: &str = "presets.json";
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Presets {
     pub slots: [Option<CachedStation>; 6],
 }
 
 impl Presets {
-    pub fn load() -> Self {
-        let path = Path::new(PRESETS_FILENAME);
-        if path.exists()
-            && let Ok(content) = fs::read_to_string(path)
-            && let Ok(loaded) = serde_json::from_str::<Presets>(&content)
-        {
-            return loaded;
-        }
-        Self::default()
-    }
-
-    pub fn save(&self) {
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(PRESETS_FILENAME, json);
-        }
-    }
-
-    pub fn set_preset(&mut self, slot_idx: usize, station: CachedStation) {
+    pub fn set_preset(&mut self, slot_idx: usize, station: CachedStation) -> bool {
         if slot_idx < 6 {
             self.slots[slot_idx] = Some(station);
-            self.save();
+            true
+        } else {
+            false
         }
     }
 
@@ -61,7 +42,8 @@ mod tests {
             ..Default::default()
         };
 
-        presets.set_preset(2, station.clone());
+        let ok = presets.set_preset(2, station.clone());
+        assert!(ok);
         assert_eq!(presets.get_preset(2).unwrap().name, "Ambient Sleep");
     }
 }

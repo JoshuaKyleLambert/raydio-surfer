@@ -74,6 +74,7 @@ impl AudioController {
             .unwrap_or(PlayerStatus::Stopped)
     }
 
+    #[allow(dead_code)]
     pub fn volume(&self) -> f32 {
         self.volume.lock().map(|v| *v).unwrap_or(0.5)
     }

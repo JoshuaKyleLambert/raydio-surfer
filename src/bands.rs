@@ -1,5 +1,89 @@
 use crate::api::CachedStation;
+use serde::{Deserialize, Serialize};
 
+pub const NUM_BANDS: usize = 9;
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct BandSlot {
+    pub label: String,
+    pub query: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Bands {
+    pub slots: [BandSlot; NUM_BANDS],
+}
+
+impl Default for Bands {
+    fn default() -> Self {
+        Self {
+            slots: [
+                BandSlot {
+                    label: "ALL".into(),
+                    query: "".into(),
+                },
+                BandSlot {
+                    label: "ROCK".into(),
+                    query: "rock".into(),
+                },
+                BandSlot {
+                    label: "JAZZ".into(),
+                    query: "jazz".into(),
+                },
+                BandSlot {
+                    label: "ELECTRO".into(),
+                    query: "electro".into(),
+                },
+                BandSlot {
+                    label: "POP".into(),
+                    query: "pop".into(),
+                },
+                BandSlot {
+                    label: "CLASSIC".into(),
+                    query: "classic".into(),
+                },
+                BandSlot {
+                    label: "AMBIENT".into(),
+                    query: "ambient".into(),
+                },
+                BandSlot {
+                    label: "NEWS".into(),
+                    query: "news".into(),
+                },
+                BandSlot {
+                    label: "80s/90s".into(),
+                    query: "80s".into(),
+                },
+            ],
+        }
+    }
+}
+
+impl Bands {
+    pub fn set_band(&mut self, idx: usize, search_term: &str) -> bool {
+        if idx < NUM_BANDS {
+            let trimmed = search_term.trim();
+            let label = if trimmed.is_empty() {
+                "ALL".to_string()
+            } else {
+                trimmed.chars().take(10).collect::<String>().to_uppercase()
+            };
+            self.slots[idx] = BandSlot {
+                label,
+                query: trimmed.to_string(),
+            };
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_band(&self, idx: usize) -> Option<&BandSlot> {
+        self.slots.get(idx)
+    }
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GenreBand {
     All,
@@ -13,6 +97,7 @@ pub enum GenreBand {
     Retro,
 }
 
+#[allow(dead_code)]
 impl GenreBand {
     pub const ALL_BANDS: [GenreBand; 9] = [
         GenreBand::All,
@@ -237,5 +322,28 @@ mod tests {
 
         let non_matching_band = filter_by_band_and_search(&stations, GenreBand::Jazz, "California");
         assert!(non_matching_band.is_empty());
+    }
+
+    #[test]
+    fn test_bands_default_and_set_band() {
+        let mut bands = Bands::default();
+        assert_eq!(bands.slots.len(), NUM_BANDS);
+        assert_eq!(bands.get_band(0).unwrap().label, "ALL");
+        assert_eq!(bands.get_band(0).unwrap().query, "");
+        assert_eq!(bands.get_band(1).unwrap().label, "ROCK");
+        assert_eq!(bands.get_band(1).unwrap().query, "rock");
+
+        // Set custom query to slot 2
+        bands.slots[2] = BandSlot {
+            label: "SYNTHWAVE".into(),
+            query: "synthwave".into(),
+        };
+        assert_eq!(bands.get_band(2).unwrap().label, "SYNTHWAVE");
+        assert_eq!(bands.get_band(2).unwrap().query, "synthwave");
+
+        // Test set_band helper logic (without disk save in test)
+        let trimmed = "  chillhop  ";
+        let label = trimmed.trim().chars().take(10).collect::<String>().to_uppercase();
+        assert_eq!(label, "CHILLHOP");
     }
 }

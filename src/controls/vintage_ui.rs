@@ -2,7 +2,7 @@ use crate::api::CachedStation;
 use crate::audio::{AudioController, PlayerStatus};
 use crate::bands::GenreBand;
 use crate::layout::StereoLayout;
-use crate::presets::Presets;
+use crate::settings::Settings;
 use raylib::drawing::RaylibDrawHandle;
 use raylib::prelude::*;
 
@@ -25,6 +25,7 @@ pub const TITLE_ANIM_PAUSE_DURATION: f32 = 1.2;
 pub struct VintageUiState {
     pub search_input: String,
     pub active_band: GenreBand,
+    pub active_band_idx: usize,
     pub active_index: usize,
     pub is_power_on: bool,
     pub volume: f32,
@@ -43,6 +44,7 @@ impl VintageUiState {
         Self {
             search_input: String::with_capacity(32),
             active_band: GenreBand::All,
+            active_band_idx: 0,
             active_index: 0,
             is_power_on: true,
             volume: initial_volume,
@@ -173,7 +175,7 @@ pub fn render_vintage_stereo(
     d: &mut RaylibDrawHandle<'_>,
     layout: &StereoLayout,
     ui: &mut VintageUiState,
-    presets: &mut Presets,
+    settings: &mut Settings,
     audio: &AudioController,
     ctx: StationViewContext<'_>,
 ) {
@@ -183,6 +185,7 @@ pub fn render_vintage_stereo(
     let total_stations_count = ctx.total_stations_count;
 
     let dt = d.get_frame_time();
+    let mouse_pos = d.get_mouse_position();
     if ui.is_loading {
         ui.loading_timer += dt;
     } else {
@@ -197,13 +200,18 @@ pub fn render_vintage_stereo(
     d.draw_rectangle_rounded(layout.display_rect, 0.06, 6, COLOR_VFD_GLASS_BG);
     d.draw_rectangle_rounded_lines(layout.display_rect, 0.06, 6, COLOR_VFD_GLASS_BORDER);
 
+    let active_band_label = settings
+        .get_band(ui.active_band_idx)
+        .map(|b| b.label.as_str())
+        .unwrap_or("ALL");
+
     // Display Top Line: Active Band + Live Scope Counter + Stereo Indicator
     let scope_text = if ui.is_loading {
-        format!("BAND: [{}]  |  [SCANNING AIRWAVES...]", ui.active_band.label())
+        format!("BAND: [{}]  |  [SCANNING AIRWAVES...]", active_band_label)
     } else {
         format!(
             "BAND: [{}]  |  TUNED: {} / {} (TOTAL: {})",
-            ui.active_band.label(),
+            active_band_label,
             if active_filtered_count > 0 {
                 ui.active_index + 1
             } else {
@@ -373,8 +381,9 @@ pub fn render_vintage_stereo(
     );
     let prev_vol = ui.volume;
     d.gui_slider(layout.vol_slider_rect, "", "", &mut ui.volume, 0.0, 1.0);
-    if (ui.volume - prev_vol).abs() > 0.01 {
+    if (ui.volume - prev_vol).abs() > 0.005 {
         audio.set_volume(ui.volume);
+        settings.set_volume(ui.volume);
     }
 
     // 5. Search Bar & Clear Button
@@ -390,21 +399,44 @@ pub fn render_vintage_stereo(
     }
 
     // 6. Waveband Push-Buttons
-    for (idx, &band) in GenreBand::ALL_BANDS.iter().enumerate() {
-        if idx < layout.band_btn_rects.len() {
-            let rect = layout.band_btn_rects[idx];
-            let is_active = ui.active_band == band;
-            let label = if is_active {
-                format!("#112#{}", band.label())
-            } else {
-                band.label().to_string()
-            };
+    let num_band_btns = settings.bands.slots.len().min(layout.band_btn_rects.len());
+    let mut band_to_save: Option<(usize, String)> = None;
 
-            if d.gui_button(rect, &label) {
-                ui.active_band = band;
-                ui.active_index = 0;
-            }
+    for idx in 0..num_band_btns {
+        let rect = layout.band_btn_rects[idx];
+        let is_active = ui.active_band_idx == idx;
+        let band_label = &settings.bands.slots[idx].label;
+        let label = if is_active {
+            format!("#112#{}", band_label)
+        } else {
+            band_label.clone()
+        };
+
+        let hovered = rect.check_collision_point_rec(mouse_pos);
+
+        // Left Click -> Select band and populate search input with band's query
+        if d.gui_button(rect, &label) {
+            ui.active_band_idx = idx;
+            ui.search_input = settings.bands.slots[idx].query.clone();
+            ui.active_index = 0;
+            ui.status_feedback = Some((format!("Switched to Band [{}]", settings.bands.slots[idx].label), 3.0));
         }
+
+        // Right Click -> Save active search query into this band slot
+        if hovered && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT) {
+            let term = ui.search_input.trim().to_string();
+            band_to_save = Some((idx, term));
+        }
+    }
+
+    if let Some((idx, term)) = band_to_save {
+        settings.set_band(idx, &term);
+        let updated_label = settings.get_band(idx).map(|b| b.label.as_str()).unwrap_or("");
+        ui.active_band_idx = idx;
+        ui.status_feedback = Some((
+            format!("Saved \"{}\" to Band [{}]!", term, updated_label),
+            3.0,
+        ));
     }
 
     // 7. Frequency Dial & Sweeping Needle
@@ -436,7 +468,6 @@ pub fn render_vintage_stereo(
     }
 
     // Interactive Dial Tap / Drag to Jump
-    let mouse_pos = d.get_mouse_position();
     let is_mouse_down = d.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT);
     let dial_hovered = layout.dial_track_rect.check_collision_point_rec(mouse_pos);
 
@@ -493,7 +524,7 @@ pub fn render_vintage_stereo(
     // 9. Six Preset Push Buttons
     for i in 0..6 {
         let preset_rect = layout.preset_rects[i];
-        let preset_station = presets.get_preset(i);
+        let preset_station = settings.get_preset(i);
         let btn_label = if let Some(st) = preset_station {
             format!(
                 "[{}] {}",
@@ -512,6 +543,7 @@ pub fn render_vintage_stereo(
                 if let Some(all) = ctx.all_stations
                     && let Some(pos) = all.iter().position(|s| s.url == st.url || s.name == st.name)
                 {
+                    ui.active_band_idx = 0;
                     ui.active_band = GenreBand::All;
                     ui.search_input.clear();
                     ui.active_index = pos;
@@ -544,7 +576,7 @@ pub fn render_vintage_stereo(
                     ..Default::default()
                 }
             };
-            presets.set_preset(i, st);
+            settings.set_preset(i, st);
             ui.status_feedback = Some((format!("Saved to Preset [{}]!", i + 1), 3.0));
         }
     }
@@ -573,6 +605,7 @@ mod tests {
         assert_eq!(state.volume, 0.75);
         assert!(state.is_power_on);
         assert_eq!(state.active_band, GenreBand::All);
+        assert_eq!(state.active_band_idx, 0);
         assert_eq!(state.active_index, 0);
         assert!(state.search_input.is_empty());
         assert!(state.status_feedback.is_none());
