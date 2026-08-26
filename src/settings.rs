@@ -16,6 +16,8 @@ pub struct Settings {
     pub bands: Bands,
     #[serde(default)]
     pub presets: Presets,
+    #[serde(default)]
+    pub current_station: Option<CachedStation>,
 }
 
 fn default_volume() -> f32 {
@@ -28,6 +30,7 @@ impl Default for Settings {
             volume: DEFAULT_VOLUME,
             bands: Bands::default(),
             presets: Presets::default(),
+            current_station: None,
         }
     }
 }
@@ -116,6 +119,17 @@ impl Settings {
     pub fn get_band(&self, idx: usize) -> Option<&BandSlot> {
         self.bands.get_band(idx)
     }
+
+    pub fn set_current_station(&mut self, station: Option<CachedStation>) {
+        if self.current_station != station {
+            self.current_station = station;
+            self.save();
+        }
+    }
+
+    pub fn get_current_station(&self) -> Option<&CachedStation> {
+        self.current_station.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -168,6 +182,12 @@ mod tests {
             url: "http://synth".into(),
             ..Default::default()
         });
+        settings.set_current_station(Some(CachedStation {
+            name: "Active Stream".into(),
+            url: "http://active.stream".into(),
+            tags: "ambient".into(),
+            ..Default::default()
+        }));
 
         let json = serde_json::to_string(&settings).expect("Must serialize");
         let deserialized: Settings = serde_json::from_str(&json).expect("Must deserialize");
@@ -175,5 +195,21 @@ mod tests {
         assert_eq!(deserialized.volume, 0.85);
         assert_eq!(deserialized.get_band(1).unwrap().label, "SYNTH");
         assert_eq!(deserialized.get_preset(0).unwrap().name, "Synth Station");
+        assert_eq!(
+            deserialized.get_current_station().unwrap().name,
+            "Active Stream"
+        );
+    }
+
+    #[test]
+    fn test_settings_legacy_deserialization_without_current_station() {
+        let legacy_json = r#"{
+            "volume": 0.6
+        }"#;
+        let loaded: Settings = serde_json::from_str(legacy_json).expect("Must deserialize legacy");
+        assert_eq!(loaded.volume, 0.6);
+        assert_eq!(loaded.current_station, None);
+        assert_eq!(loaded.bands.slots.len(), 9);
+        assert_eq!(loaded.presets.slots.len(), 6);
     }
 }

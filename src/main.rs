@@ -36,6 +36,21 @@ fn main() {
     } else {
         Vec::new()
     };
+
+    // If a current_station is saved in settings, restore it as the active station on startup
+    if let Some(ref saved) = settings.current_station {
+        if let Some(pos) = active_stations.iter().position(|s| {
+            (!saved.stationuuid.is_empty() && s.stationuuid == saved.stationuuid)
+                || s.url == saved.url
+                || s.name == saved.name
+        }) {
+            ui.active_index = pos;
+        } else if !saved.name.is_empty() || !saved.url.is_empty() {
+            active_stations.insert(0, saved.clone());
+            ui.active_index = 0;
+        }
+    }
+
     let mut last_played_channel: Option<(String, String)> = None;
 
     let (mut rl, thread) = raylib::init()
@@ -80,16 +95,23 @@ fn main() {
         if let Some(resp) = loader.poll_response()
             && resp.query.trim().to_lowercase() == ui.search_input.trim().to_lowercase()
         {
-            let current_selected_url = if ui.active_index < active_stations.len() {
-                Some(active_stations[ui.active_index].url.clone())
+            let current_selected_st = if ui.active_index < active_stations.len() {
+                Some(active_stations[ui.active_index].clone())
             } else {
                 None
             };
             active_stations = resp.stations;
-            if let Some(url) = current_selected_url
-                && let Some(pos) = active_stations.iter().position(|s| s.url == url)
-            {
-                ui.active_index = pos;
+            if let Some(st) = current_selected_st {
+                if let Some(pos) = active_stations.iter().position(|s| {
+                    (!st.stationuuid.is_empty() && s.stationuuid == st.stationuuid)
+                        || s.url == st.url
+                        || s.name == st.name
+                }) {
+                    ui.active_index = pos;
+                } else {
+                    active_stations.insert(0, st);
+                    ui.active_index = 0;
+                }
             } else {
                 ui.active_index = 0;
             }
@@ -117,7 +139,7 @@ fn main() {
 
         if let Some(idx) = preset_to_recall {
             let mut ctx = PresetTuneContext {
-                settings: &settings,
+                settings: &mut settings,
                 ui: &mut ui,
                 active_stations: &mut active_stations,
                 loader: &mut loader,
@@ -188,10 +210,12 @@ fn main() {
         if current_channel != last_played_channel {
             last_played_channel = current_channel.clone();
             if let Some(st) = current_station {
+                settings.set_current_station(Some(st.clone()));
                 if ui.is_power_on {
                     audio.play(st.name.clone(), st.url.clone());
                 }
             } else {
+                settings.set_current_station(None);
                 audio.stop();
             }
         }
@@ -217,7 +241,7 @@ fn main() {
 }
 
 pub struct PresetTuneContext<'a> {
-    pub settings: &'a Settings,
+    pub settings: &'a mut Settings,
     pub ui: &'a mut VintageUiState,
     pub active_stations: &'a mut Vec<CachedStation>,
     pub loader: &'a mut StationLoader,
@@ -228,7 +252,7 @@ pub struct PresetTuneContext<'a> {
 }
 
 pub fn tune_to_preset(preset_idx: usize, ctx: &mut PresetTuneContext<'_>) {
-    if let Some(st) = ctx.settings.get_preset(preset_idx) {
+    if let Some(st) = ctx.settings.get_preset(preset_idx).cloned() {
         if let Some(pos) = ctx
             .active_stations
             .iter()
@@ -255,6 +279,7 @@ pub fn tune_to_preset(preset_idx: usize, ctx: &mut PresetTuneContext<'_>) {
                 ctx.ui.active_index = 0;
             }
         }
+        ctx.settings.set_current_station(Some(st.clone()));
         if ctx.ui.is_power_on {
             ctx.audio.play(st.name.clone(), st.url.clone());
         }
@@ -560,7 +585,7 @@ mod tests {
         let mut last_played_channel = None;
 
         let mut ctx = PresetTuneContext {
-            settings: &settings,
+            settings: &mut settings,
             ui: &mut ui,
             active_stations: &mut active_stations,
             loader: &mut loader,
@@ -577,6 +602,10 @@ mod tests {
         assert_eq!(
             last_played_channel,
             Some(("Beta Jazz".to_string(), "http://beta.jazz".to_string()))
+        );
+        assert_eq!(
+            settings.get_current_station().map(|s| s.name.as_str()),
+            Some("Beta Jazz")
         );
         assert!(ui.status_feedback.is_some());
     }
@@ -610,7 +639,7 @@ mod tests {
         let mut last_played_channel = None;
 
         let mut ctx = PresetTuneContext {
-            settings: &settings,
+            settings: &mut settings,
             ui: &mut ui,
             active_stations: &mut active_stations,
             loader: &mut loader,
@@ -630,6 +659,86 @@ mod tests {
             last_played_channel,
             Some(("Gamma Synth".to_string(), "http://gamma.synth".to_string()))
         );
+        assert_eq!(
+            settings.get_current_station().map(|s| s.name.as_str()),
+            Some("Gamma Synth")
+        );
+    }
+
+    #[test]
+    fn test_startup_station_resumption_when_in_catalog() {
+        let mut settings = Settings::default();
+        let station_saved = CachedStation {
+            stationuuid: "uuid-xyz".to_string(),
+            name: "Vaporwave FM".to_string(),
+            url: "http://vaporwave.fm".to_string(),
+            tags: "vaporwave".to_string(),
+            ..Default::default()
+        };
+        settings.set_current_station(Some(station_saved.clone()));
+
+        let mut active_stations = vec![
+            CachedStation {
+                name: "Station A".to_string(),
+                url: "http://station.a".to_string(),
+                ..Default::default()
+            },
+            station_saved.clone(),
+        ];
+        let mut ui = crate::controls::vintage_ui::VintageUiState::new(0.75);
+
+        if let Some(ref saved) = settings.current_station {
+            if let Some(pos) = active_stations.iter().position(|s| {
+                (!saved.stationuuid.is_empty() && s.stationuuid == saved.stationuuid)
+                    || s.url == saved.url
+                    || s.name == saved.name
+            }) {
+                ui.active_index = pos;
+            } else if !saved.name.is_empty() || !saved.url.is_empty() {
+                active_stations.insert(0, saved.clone());
+                ui.active_index = 0;
+            }
+        }
+
+        assert_eq!(ui.active_index, 1);
+        assert_eq!(active_stations[ui.active_index].name, "Vaporwave FM");
+    }
+
+    #[test]
+    fn test_startup_station_resumption_when_missing_from_initial_catalog() {
+        let mut settings = Settings::default();
+        let station_saved = CachedStation {
+            stationuuid: "uuid-custom".to_string(),
+            name: "Custom Ambient".to_string(),
+            url: "http://custom.ambient".to_string(),
+            tags: "ambient".to_string(),
+            ..Default::default()
+        };
+        settings.set_current_station(Some(station_saved.clone()));
+
+        let mut active_stations = vec![CachedStation {
+            name: "Station A".to_string(),
+            url: "http://station.a".to_string(),
+            ..Default::default()
+        }];
+        let mut ui = crate::controls::vintage_ui::VintageUiState::new(0.75);
+
+        if let Some(ref saved) = settings.current_station {
+            if let Some(pos) = active_stations.iter().position(|s| {
+                (!saved.stationuuid.is_empty() && s.stationuuid == saved.stationuuid)
+                    || s.url == saved.url
+                    || s.name == saved.name
+            }) {
+                ui.active_index = pos;
+            } else if !saved.name.is_empty() || !saved.url.is_empty() {
+                active_stations.insert(0, saved.clone());
+                ui.active_index = 0;
+            }
+        }
+
+        assert_eq!(ui.active_index, 0);
+        assert_eq!(active_stations[0].name, "Custom Ambient");
+        assert_eq!(active_stations.len(), 2);
     }
 
     #[test]
