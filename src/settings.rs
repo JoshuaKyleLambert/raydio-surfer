@@ -1,11 +1,11 @@
 use crate::api::CachedStation;
 use crate::bands::{BandSlot, Bands};
+use crate::paths::{self, SETTINGS_FILENAME};
 use crate::presets::Presets;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-pub const SETTINGS_FILENAME: &str = "settings.json";
 pub const DEFAULT_VOLUME: f32 = 0.75;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -34,9 +34,13 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load() -> Self {
-        let path = Path::new(SETTINGS_FILENAME);
+        let path = paths::settings_path();
         let mut settings = if path.exists()
-            && let Ok(content) = fs::read_to_string(path)
+            && let Ok(content) = fs::read_to_string(&path)
+            && let Ok(loaded) = serde_json::from_str::<Settings>(&content)
+        {
+            loaded
+        } else if let Ok(content) = fs::read_to_string(SETTINGS_FILENAME)
             && let Ok(loaded) = serde_json::from_str::<Settings>(&content)
         {
             loaded
@@ -45,19 +49,29 @@ impl Settings {
         };
 
         // Migration: If legacy presets.json or bands.json exist on disk, migrate them into settings
-        let presets_path = Path::new("presets.json");
-        if presets_path.exists()
+        let presets_local = Path::new("presets.json");
+        let presets_config = paths::config_dir().map(|d| d.join("presets.json"));
+        let presets_content = presets_config
+            .as_deref()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .or_else(|| fs::read_to_string(presets_local).ok());
+
+        if let Some(content) = presets_content
             && settings.presets.slots.iter().all(|s| s.is_none())
-            && let Ok(content) = fs::read_to_string(presets_path)
             && let Ok(loaded_presets) = serde_json::from_str::<Presets>(&content)
         {
             settings.presets = loaded_presets;
         }
 
-        let bands_path = Path::new("bands.json");
-        if bands_path.exists()
+        let bands_local = Path::new("bands.json");
+        let bands_config = paths::config_dir().map(|d| d.join("bands.json"));
+        let bands_content = bands_config
+            .as_deref()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .or_else(|| fs::read_to_string(bands_local).ok());
+
+        if let Some(content) = bands_content
             && settings.bands == Bands::default()
-            && let Ok(content) = fs::read_to_string(bands_path)
             && let Ok(loaded_bands) = serde_json::from_str::<Bands>(&content)
         {
             settings.bands = loaded_bands;
@@ -69,7 +83,9 @@ impl Settings {
 
     pub fn save(&self) {
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(SETTINGS_FILENAME, json);
+            let path = paths::settings_path();
+            paths::ensure_parent_dir_exists(&path);
+            let _ = fs::write(path, json);
         }
     }
 

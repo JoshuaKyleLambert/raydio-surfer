@@ -12,6 +12,7 @@ mod audio;
 mod bands;
 mod controls;
 mod layout;
+mod paths;
 mod presets;
 mod settings;
 

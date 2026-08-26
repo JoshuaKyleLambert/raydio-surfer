@@ -1,4 +1,5 @@
 use crate::bands::GenreBand;
+use crate::paths::{self, CACHE_FILENAME};
 use radiobrowser::{ApiStation, StationOrder, blocking::RadioBrowserAPI};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -7,7 +8,6 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use std::{fs, path::Path};
 
-const CACHE_FILENAME: &str = "stations_cache.json";
 const CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24); // 24 hours
 const MAX_STATIONS_LIMIT: &str = "5000";
 
@@ -29,13 +29,20 @@ pub struct CachedStation {
 
 // Load cached stations from disk
 pub fn load_stations_from_cache() -> Option<Vec<CachedStation>> {
-    let path = Path::new(CACHE_FILENAME);
-    if !path.exists() {
-        return None;
-    }
+    let path = paths::cache_path();
+    let file_path = if path.exists() {
+        path
+    } else {
+        let local_path = Path::new(CACHE_FILENAME);
+        if local_path.exists() {
+            local_path.to_path_buf()
+        } else {
+            return None;
+        }
+    };
 
     // Check file age
-    if let Ok(metadata) = fs::metadata(path)
+    if let Ok(metadata) = fs::metadata(&file_path)
         && let Ok(modified) = metadata.modified()
         && let Ok(age) = SystemTime::now().duration_since(modified)
         && age > CACHE_MAX_AGE
@@ -43,14 +50,16 @@ pub fn load_stations_from_cache() -> Option<Vec<CachedStation>> {
         return None; // Expired
     }
 
-    let data = fs::read_to_string(path).ok()?;
+    let data = fs::read_to_string(&file_path).ok()?;
     serde_json::from_str(&data).ok()
 }
 
 // Map ApiStation instances to CachedStation and save them
 pub fn save_stations_to_cache(stations: &[CachedStation]) {
     if let Ok(json_data) = serde_json::to_string(stations) {
-        let _ = fs::write(CACHE_FILENAME, json_data);
+        let path = paths::cache_path();
+        paths::ensure_parent_dir_exists(&path);
+        let _ = fs::write(path, json_data);
     }
 }
 
