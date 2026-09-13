@@ -83,7 +83,9 @@ fn main() {
         let band_changed = ui.active_band_idx != last_band_idx;
         if search_changed || band_changed {
             let immediate = band_changed || rl.is_key_pressed(KeyboardKey::KEY_ENTER);
-            if let Some(cached) = loader.request_stations(GenreBand::All, &ui.search_input, immediate) {
+            if let Some(cached) =
+                loader.request_stations(GenreBand::All, &ui.search_input, immediate)
+            {
                 active_stations = cached;
                 ui.active_index = 0;
             }
@@ -354,7 +356,10 @@ mod tests {
         last_played_channel = current_channel;
         assert_eq!(
             last_played_channel,
-            Some(("Station Alpha".to_string(), "http://stream.alpha.fm".to_string()))
+            Some((
+                "Station Alpha".to_string(),
+                "http://stream.alpha.fm".to_string()
+            ))
         );
 
         // 2. Same frame / no change
@@ -369,7 +374,10 @@ mod tests {
         last_played_channel = current_channel;
         assert_eq!(
             last_played_channel,
-            Some(("Station Beta".to_string(), "http://stream.beta.fm".to_string()))
+            Some((
+                "Station Beta".to_string(),
+                "http://stream.beta.fm".to_string()
+            ))
         );
 
         // 4. Channel changed to None (e.g. 0 search results)
@@ -382,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_preset_station_sync_to_index() {
-        let stations = vec![
+        let stations = [
             CachedStation {
                 stationuuid: "1".to_string(),
                 name: "Rock Radio".to_string(),
@@ -407,7 +415,9 @@ mod tests {
             ..Default::default()
         };
 
-        let pos = stations.iter().position(|s| s.url == preset_station.url || s.name == preset_station.name);
+        let pos = stations
+            .iter()
+            .position(|s| s.url == preset_station.url || s.name == preset_station.name);
         assert_eq!(pos, Some(1));
     }
 
@@ -448,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_background_response_preserves_active_station_selection() {
-        let initial_stations = vec![
+        let initial_stations = [
             CachedStation {
                 stationuuid: "1".to_string(),
                 name: "Station A".to_string(),
@@ -467,7 +477,7 @@ mod tests {
         let current_selected_url = Some(initial_stations[active_index].url.clone());
 
         // Background query returns updated list with Station B in a different position
-        let updated_stations = vec![
+        let updated_stations = [
             CachedStation {
                 stationuuid: "3".to_string(),
                 name: "Station C".to_string(),
@@ -545,7 +555,11 @@ mod tests {
         let label_empty = if trimmed_empty.is_empty() {
             "ALL".to_string()
         } else {
-            trimmed_empty.chars().take(10).collect::<String>().to_uppercase()
+            trimmed_empty
+                .chars()
+                .take(10)
+                .collect::<String>()
+                .to_uppercase()
         };
         settings.bands.slots[3] = crate::bands::BandSlot {
             label: label_empty,
