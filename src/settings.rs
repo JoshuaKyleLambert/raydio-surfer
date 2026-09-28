@@ -146,8 +146,10 @@ mod tests {
 
     #[test]
     fn test_set_volume_clamps() {
-        let mut settings = Settings::default();
-        settings.volume = 0.5;
+        let settings = Settings {
+            volume: 0.5,
+            ..Default::default()
+        };
         assert_eq!(settings.volume, 0.5);
     }
 
@@ -171,8 +173,10 @@ mod tests {
 
     #[test]
     fn test_settings_serialization_combined() {
-        let mut settings = Settings::default();
-        settings.volume = 0.85;
+        let mut settings = Settings {
+            volume: 0.85,
+            ..Default::default()
+        };
         settings.bands.slots[1] = BandSlot {
             label: "SYNTH".into(),
             query: "synth".into(),

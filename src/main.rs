@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use crate::api::{CachedStation, StationLoader};
 use crate::audio::AudioController;
 use crate::bands::GenreBand;
@@ -595,7 +597,7 @@ mod tests {
         let mut loader = crate::api::StationLoader::new();
         let mut last_search = String::new();
         let mut last_band_idx = 0;
-        let audio = crate::audio::AudioController::new();
+        let audio = AudioController::new();
         let mut last_played_channel = None;
 
         let mut ctx = PresetTuneContext {
@@ -636,7 +638,7 @@ mod tests {
         };
         settings.set_preset(1, preset_st.clone());
 
-        let mut ui = crate::controls::vintage_ui::VintageUiState::new(0.75);
+        let mut ui = VintageUiState::new(0.75);
         ui.search_input = "classical".to_string();
         ui.active_band_idx = 4;
         let mut active_stations = vec![CachedStation {
@@ -646,10 +648,10 @@ mod tests {
             tags: "classical".to_string(),
             ..Default::default()
         }];
-        let mut loader = crate::api::StationLoader::new();
+        let mut loader = StationLoader::new();
         let mut last_search = "classical".to_string();
         let mut last_band_idx = 4;
-        let audio = crate::audio::AudioController::new();
+        let audio = AudioController::new();
         let mut last_played_channel = None;
 
         let mut ctx = PresetTuneContext {
@@ -699,7 +701,7 @@ mod tests {
             },
             station_saved.clone(),
         ];
-        let mut ui = crate::controls::vintage_ui::VintageUiState::new(0.75);
+        let mut ui = VintageUiState::new(0.75);
 
         if let Some(ref saved) = settings.current_station {
             if let Some(pos) = active_stations.iter().position(|s| {
@@ -735,7 +737,7 @@ mod tests {
             url: "http://station.a".to_string(),
             ..Default::default()
         }];
-        let mut ui = crate::controls::vintage_ui::VintageUiState::new(0.75);
+        let mut ui = VintageUiState::new(0.75);
 
         if let Some(ref saved) = settings.current_station {
             if let Some(pos) = active_stations.iter().position(|s| {
@@ -757,7 +759,7 @@ mod tests {
 
     #[test]
     fn test_gui_requested_preset_flow() {
-        let mut ui = crate::controls::vintage_ui::VintageUiState::new(0.75);
+        let mut ui = VintageUiState::new(0.75);
         assert_eq!(ui.requested_preset, None);
 
         // Simulate GUI preset button 3 clicked (0-indexed 2)
