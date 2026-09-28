@@ -73,8 +73,9 @@ impl StereoLayout {
 
     /// Compute landscape dash head-unit layout (Desktop, Web Canvas, Tablet, Phone Landscape)
     fn compute_landscape(width: f32, height: f32, num_bands: usize) -> Self {
-        let margin_x = (width * 0.015).max(6.0);
-        let margin_y = (height * 0.02).max(6.0);
+        let margin = (width * 0.012).clamp(6.0, 12.0);
+        let margin_x = margin;
+        let margin_y = margin;
 
         let bezel_rect = Rectangle::new(
             margin_x,
@@ -83,19 +84,41 @@ impl StereoLayout {
             height - (margin_y * 2.0),
         );
 
-        let pad_x = bezel_rect.width * 0.02;
+        let pad = (bezel_rect.width * 0.015).clamp(8.0, 16.0);
+        let pad_x = pad;
+        let pad_y = pad;
         let inner_x = bezel_rect.x + pad_x;
         let inner_w = bezel_rect.width - (pad_x * 2.0);
+        let inner_y = bezel_rect.y + pad_y;
+        let inner_h = (bezel_rect.height - (pad_y * 2.0)).max(100.0);
 
         // Scaled typography
-        let font_display_large = ((height * 0.05).round() as i32).clamp(14, 28);
-        let font_display_small = ((height * 0.032).round() as i32).clamp(10, 18);
-        let font_ui_regular = ((height * 0.035).round() as i32).clamp(11, 20);
-        let font_ui_small = ((height * 0.028).round() as i32).clamp(9, 15);
+        let font_display_large = ((height * 0.065).round() as i32).clamp(16, 28);
+        let font_display_small = ((height * 0.042).round() as i32).clamp(11, 18);
+        let font_ui_regular = ((height * 0.045).round() as i32).clamp(12, 20);
+        let font_ui_small = ((height * 0.038).round() as i32).clamp(10, 15);
 
-        // Row 1: Power, Backlit Display, Volume Knob/Slider (approx 22% of height)
-        let row1_y = bezel_rect.y + (bezel_rect.height * 0.04);
-        let row1_h = (bezel_rect.height * 0.20).max(44.0);
+        let row_gap = (inner_h * 0.038).clamp(6.0, 12.0);
+        let total_gaps = 4.0 * row_gap;
+        let available_content_h = (inner_h - total_gaps).max(40.0);
+
+        // Proportional row distribution summing to 1.0 (with row5_h == row3_h):
+        // Row 1 (Display/Power/Vol): 36%
+        // Row 2 (Search Bar): 13%
+        // Row 3 (Search Presets / Bands): 14%
+        // Row 4 (Dial Scale / Step Buttons): 23%
+        // Row 5 (Preset Station Buttons): 14% (= Row 3 height)
+        let row1_h = available_content_h * 0.36;
+        let row2_h = available_content_h * 0.13;
+        let row3_h = available_content_h * 0.14;
+        let row4_h = available_content_h * 0.23;
+        let row5_h = row3_h;
+
+        let row1_y = inner_y;
+        let row2_y = row1_y + row1_h + row_gap;
+        let row3_y = row2_y + row2_h + row_gap;
+        let row4_y = row3_y + row3_h + row_gap;
+        let row5_y = row4_y + row4_h + row_gap;
 
         let power_w = (inner_w * 0.09).clamp(50.0, 90.0);
         let vol_w = (inner_w * 0.16).clamp(80.0, 150.0);
@@ -117,10 +140,6 @@ impl StereoLayout {
             (row1_h * 0.45).clamp(16.0, 28.0),
         );
 
-        // Row 2: Search Box + Clear button (approx 8% of height)
-        let row2_y = row1_y + row1_h + (bezel_rect.height * 0.03);
-        let row2_h = (bezel_rect.height * 0.08).clamp(24.0, 36.0);
-
         let clear_w = (inner_w * 0.08).clamp(40.0, 70.0);
         let search_gap = 8.0;
         let search_w = inner_w - clear_w - search_gap;
@@ -129,14 +148,10 @@ impl StereoLayout {
         let search_clear_rect =
             Rectangle::new(inner_x + search_w + search_gap, row2_y, clear_w, row2_h);
 
-        // Row 3: Genre Wavebands Row (approx 8% of height)
-        let row3_y = row2_y + row2_h + (bezel_rect.height * 0.025);
-        let row3_h = (bezel_rect.height * 0.075).clamp(22.0, 34.0);
-
         let count = num_bands.max(1);
         let band_gap = (inner_w * 0.008).clamp(3.0, 10.0);
-        let total_gaps = (count - 1) as f32 * band_gap;
-        let single_band_w = (inner_w - total_gaps) / count as f32;
+        let total_band_gaps = (count - 1) as f32 * band_gap;
+        let single_band_w = (inner_w - total_band_gaps) / count as f32;
 
         let mut band_btn_rects = Vec::with_capacity(count);
         for i in 0..count {
@@ -144,12 +159,8 @@ impl StereoLayout {
             band_btn_rects.push(Rectangle::new(bx, row3_y, single_band_w, row3_h));
         }
 
-        // Row 4: Tuning Dial Scale & Coarse/Fine Step Buttons (approx 14% of height)
-        let row4_y = row3_y + row3_h + (bezel_rect.height * 0.03);
-        let row4_h = (bezel_rect.height * 0.12).clamp(30.0, 50.0);
-
         let step_btn_w = (inner_w * 0.09).clamp(45.0, 75.0);
-        let step_btn_h = (row4_h * 0.8).clamp(22.0, 36.0);
+        let step_btn_h = (row4_h * 0.75).clamp(20.0, 34.0);
         let step_btn_y = row4_y + ((row4_h - step_btn_h) / 2.0);
 
         let coarse_prev_rect = Rectangle::new(inner_x, step_btn_y, step_btn_w, step_btn_h);
@@ -177,24 +188,18 @@ impl StereoLayout {
         let dial_w = (fine_next_rect.x - 12.0 - dial_x).max(60.0);
         let dial_track_rect = Rectangle::new(dial_x, row4_y, dial_w, row4_h);
 
-        // Row 5: 6 Presets + Tuning Knob (approx 20% of height)
-        let row5_y = row4_y + row4_h + (bezel_rect.height * 0.035);
-        let row5_h =
-            (bezel_rect.y + bezel_rect.height - row5_y - (bezel_rect.height * 0.03)).max(36.0);
-
-        let tune_knob_w = (inner_w * 0.14).clamp(60.0, 110.0);
-        let tune_knob_rect =
-            Rectangle::new(inner_x + inner_w - tune_knob_w, row5_y, tune_knob_w, row5_h);
-
-        let presets_total_w = tune_knob_rect.x - 16.0 - inner_x;
-        let preset_gap = (presets_total_w * 0.02).clamp(4.0, 12.0);
-        let single_preset_w = (presets_total_w - (preset_gap * 5.0)) / 6.0;
+        // Row 5: 6 Presets (Matching search preset button height with 80s/90s wide rectangular aspect ratio)
+        let preset_gap = (inner_w * 0.008).clamp(3.0, 10.0);
+        let total_preset_gaps = 5.0 * preset_gap;
+        let single_preset_w = (inner_w - total_preset_gaps) / 6.0;
 
         let mut preset_rects = [Rectangle::default(); 6];
         for (i, slot) in preset_rects.iter_mut().enumerate() {
             let px = inner_x + (i as f32 * (single_preset_w + preset_gap));
             *slot = Rectangle::new(px, row5_y, single_preset_w, row5_h);
         }
+
+        let tune_knob_rect = Rectangle::default();
 
         Self {
             orientation: Orientation::Landscape,
@@ -322,10 +327,9 @@ impl StereoLayout {
             tune_btn_h,
         );
 
-        // Presets 2x3 Grid for Mobile Touch Ergonomics
+        // Presets 2x3 Grid (Matching search preset button height)
         let presets_y = tune_btn_y + tune_btn_h + (height * 0.015);
-        let available_preset_h = bezel_rect.y + bezel_rect.height - presets_y - 8.0;
-        let single_preset_h = (available_preset_h / 3.0 - 6.0).clamp(36.0, 60.0);
+        let single_preset_h = bands_h;
         let single_preset_w = (inner_w - 8.0) / 2.0;
 
         let mut preset_rects = [Rectangle::default(); 6];
@@ -396,6 +400,11 @@ mod tests {
         assert!(layout.search_box_rect.width > 100.0);
         assert_eq!(layout.band_btn_rects.len(), 8);
         assert!(layout.preset_rects[0].width > 30.0);
+        // Presets match search preset (band) button height
+        assert_eq!(
+            layout.preset_rects[0].height,
+            layout.band_btn_rects[0].height
+        );
         assert!(layout.dial_track_rect.width > 50.0);
 
         // Needle conversion check
@@ -414,12 +423,46 @@ mod tests {
     }
 
     #[test]
+    fn test_landscape_margins_and_gaps_symmetry() {
+        let width = 920.0;
+        let height = 270.0;
+        let layout = StereoLayout::compute(width, height, 8);
+
+        // Verify outer margins around bezel are equal
+        let outer_left = layout.bezel_rect.x;
+        let outer_top = layout.bezel_rect.y;
+        let outer_right = width - (layout.bezel_rect.x + layout.bezel_rect.width);
+        let outer_bottom = height - (layout.bezel_rect.y + layout.bezel_rect.height);
+
+        assert!((outer_left - outer_top).abs() < 0.01);
+        assert!((outer_left - outer_right).abs() < 0.01);
+        assert!((outer_left - outer_bottom).abs() < 0.01);
+
+        // Verify inner padding inside bezel (top, bottom, left, right) is equal
+        let inner_left = layout.power_btn_rect.x - layout.bezel_rect.x;
+        let inner_top = layout.power_btn_rect.y - layout.bezel_rect.y;
+        let inner_right = (layout.bezel_rect.x + layout.bezel_rect.width)
+            - (layout.vol_slider_rect.x + layout.vol_slider_rect.width);
+        let inner_bottom = (layout.bezel_rect.y + layout.bezel_rect.height)
+            - (layout.preset_rects[0].y + layout.preset_rects[0].height);
+
+        assert!((inner_top - inner_bottom).abs() < 0.01);
+        assert!((inner_left - inner_right).abs() < 0.01);
+        assert!((inner_top - inner_left).abs() < 0.01);
+    }
+
+    #[test]
     fn test_portrait_layout_sanity() {
         let layout = StereoLayout::compute(390.0, 844.0, 8); // iPhone 14 dimensions
         assert_eq!(layout.orientation, Orientation::Portrait);
 
         assert!(layout.display_rect.width > 200.0);
-        assert!(layout.preset_rects[0].width > 100.0); // 2 columns of large touch presets
+        assert!(layout.preset_rects[0].width > 100.0); // 2 columns of touch presets
+        // Presets match search preset (band) button height
+        assert_eq!(
+            layout.preset_rects[0].height,
+            layout.band_btn_rects[0].height
+        );
         assert!(layout.preset_rects[5].y > layout.preset_rects[0].y); // Row stacking
     }
 

@@ -56,7 +56,7 @@ fn main() {
     let mut last_played_channel: Option<(String, String)> = None;
 
     let (mut rl, thread) = raylib::init()
-        .size(860, 480)
+        .size(920, 270)
         .title("RaydioSurfer - Vintage Internet Radio")
         .resizable()
         .highdpi()
@@ -324,7 +324,7 @@ mod tests {
     fn test_check_builder_methods() {
         let mut builder = raylib::init();
         let _ = builder
-            .size(860, 480)
+            .size(920, 270)
             .title("RaydioSurfer - Vintage Internet Radio")
             .resizable()
             .highdpi()
