@@ -25,6 +25,49 @@ pub struct CachedStation {
     pub state: String,
     #[serde(default)]
     pub language: String,
+    #[serde(default)]
+    pub codec: String,
+    #[serde(default)]
+    pub bitrate: u32,
+    #[serde(default)]
+    pub hls: u8,
+}
+
+pub fn is_supported_codec(codec: &str) -> bool {
+    let c = codec.trim().to_uppercase();
+    if c.is_empty() {
+        return true;
+    }
+    !matches!(
+        c.as_str(),
+        "WMA" | "WMAV1" | "WMAV2" | "WMA2" | "WMA9" | "WMAPRO" | "ASF" | "REAL" | "RA" | "RAM" | "RM" | "MIDI" | "MID"
+    )
+}
+
+pub fn is_supported_stream(url: &str, url_resolved: &str, codec: &str) -> bool {
+    let effective_url = if !url_resolved.trim().is_empty() {
+        url_resolved.trim()
+    } else {
+        url.trim()
+    };
+
+    if effective_url.is_empty() {
+        return false;
+    }
+
+    let url_lower = effective_url.to_lowercase();
+    if url_lower.starts_with("mms://")
+        || url_lower.starts_with("rtsp://")
+        || url_lower.starts_with("rtmp://")
+    {
+        return false;
+    }
+
+    is_supported_codec(codec)
+}
+
+pub fn is_supported_station(s: &ApiStation) -> bool {
+    is_supported_stream(&s.url, &s.url_resolved, &s.codec)
 }
 
 // Load cached stations from disk
@@ -66,15 +109,26 @@ pub fn save_stations_to_cache(stations: &[CachedStation]) {
 pub fn map_api_stations(stations: Vec<ApiStation>) -> Vec<CachedStation> {
     stations
         .into_iter()
-        .map(|s| CachedStation {
-            stationuuid: s.stationuuid,
-            name: s.name,
-            url: s.url,
-            tags: s.tags,
-            country: s.country,
-            countrycode: s.countrycode,
-            state: s.state,
-            language: s.language,
+        .filter(is_supported_station)
+        .map(|s| {
+            let url = if !s.url_resolved.trim().is_empty() {
+                s.url_resolved
+            } else {
+                s.url
+            };
+            CachedStation {
+                stationuuid: s.stationuuid,
+                name: s.name,
+                url,
+                tags: s.tags,
+                country: s.country,
+                countrycode: s.countrycode,
+                state: s.state,
+                language: s.language,
+                codec: s.codec,
+                bitrate: s.bitrate,
+                hls: s.hls as u8,
+            }
         })
         .collect()
 }
@@ -105,6 +159,7 @@ pub fn get_stations_with_cache(api: &mut RadioBrowserAPI) -> Vec<CachedStation> 
             countrycode: String::new(),
             state: String::new(),
             language: String::new(),
+            ..Default::default()
         }];
     }
 
@@ -130,16 +185,24 @@ pub fn fetch_remote_stations(
         collected: &mut Vec<CachedStation>,
     ) {
         for s in api_stations {
-            if seen_uuids.insert(s.stationuuid.clone()) {
+            if is_supported_station(&s) && seen_uuids.insert(s.stationuuid.clone()) {
+                let url = if !s.url_resolved.trim().is_empty() {
+                    s.url_resolved
+                } else {
+                    s.url
+                };
                 let st = CachedStation {
                     stationuuid: s.stationuuid,
                     name: s.name,
-                    url: s.url,
+                    url,
                     tags: s.tags,
                     country: s.country,
                     countrycode: s.countrycode,
                     state: s.state,
                     language: s.language,
+                    codec: s.codec,
+                    bitrate: s.bitrate,
+                    hls: s.hls as u8,
                 };
                 if band.matches(&st) {
                     collected.push(st);
@@ -532,6 +595,7 @@ mod tests {
                 countrycode: "JP".into(),
                 state: "Tokyo".into(),
                 language: "japanese".into(),
+                ..Default::default()
             },
             CachedStation {
                 stationuuid: "2".into(),
@@ -542,6 +606,7 @@ mod tests {
                 countrycode: "US".into(),
                 state: "California".into(),
                 language: "english".into(),
+                ..Default::default()
             },
             CachedStation {
                 stationuuid: "3".into(),
@@ -552,6 +617,7 @@ mod tests {
                 countrycode: "FR".into(),
                 state: "Ile-de-France".into(),
                 language: "french".into(),
+                ..Default::default()
             },
         ];
 
@@ -624,6 +690,7 @@ mod tests {
             countrycode: "JP".into(),
             state: "Tokyo".into(),
             language: "japanese".into(),
+            ..Default::default()
         }];
 
         // Simulate receiving a response from the worker
@@ -655,5 +722,40 @@ mod tests {
     fn test_truncate() {
         assert_eq!(truncate("Short", 10), "Short");
         assert_eq!(truncate("A very long station title", 10), "A very lon");
+    }
+
+    #[test]
+    fn test_is_supported_codec() {
+        assert!(is_supported_codec("MP3"));
+        assert!(is_supported_codec("AAC"));
+        assert!(is_supported_codec("AAC+"));
+        assert!(is_supported_codec("OGG"));
+        assert!(is_supported_codec("FLAC"));
+        assert!(is_supported_codec(""));
+
+        assert!(!is_supported_codec("WMA"));
+        assert!(!is_supported_codec("wma9"));
+        assert!(!is_supported_codec("ASF"));
+        assert!(!is_supported_codec("REAL"));
+        assert!(!is_supported_codec("MIDI"));
+    }
+
+    #[test]
+    fn test_is_supported_stream() {
+        // Valid http station
+        assert!(is_supported_stream("http://stream.com/live.mp3", "", "MP3"));
+        // Valid with resolved url
+        assert!(is_supported_stream(
+            "http://stream.com/listen.pls",
+            "http://stream.com/live.aac",
+            "AAC"
+        ));
+        // Invalid protocol
+        assert!(!is_supported_stream("mms://stream.com/live", "", "WMA"));
+        assert!(!is_supported_stream("rtsp://stream.com/live", "", "AAC"));
+        // Empty URL
+        assert!(!is_supported_stream("", "", "MP3"));
+        // Unsupported codec
+        assert!(!is_supported_stream("http://stream.com/live.wma", "", "WMA"));
     }
 }

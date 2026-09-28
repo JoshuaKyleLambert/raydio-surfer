@@ -228,6 +228,7 @@ mod tests {
             countrycode: "US".into(),
             state: "California".into(),
             language: "english".into(),
+            ..Default::default()
         };
 
         let jazz_station = CachedStation {
@@ -239,6 +240,7 @@ mod tests {
             countrycode: "GB".into(),
             state: "London".into(),
             language: "english".into(),
+            ..Default::default()
         };
 
         assert!(GenreBand::Rock.matches(&rock_station));
@@ -260,6 +262,7 @@ mod tests {
                 countrycode: "US".into(),
                 state: "California".into(),
                 language: "english".into(),
+                ..Default::default()
             },
             CachedStation {
                 stationuuid: "2".into(),
@@ -270,6 +273,7 @@ mod tests {
                 countrycode: "DE".into(),
                 state: "Berlin".into(),
                 language: "german".into(),
+                ..Default::default()
             },
             CachedStation {
                 stationuuid: "3".into(),
@@ -280,6 +284,7 @@ mod tests {
                 countrycode: "JP".into(),
                 state: "Kanto".into(),
                 language: "japanese".into(),
+                ..Default::default()
             },
         ];
 

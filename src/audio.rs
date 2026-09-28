@@ -1,11 +1,208 @@
+use futures_util::StreamExt;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+pub mod playlist {
+    use reqwest::Url;
+
+    /// Resolve relative path or URL against a base URL
+    pub fn resolve_url(base: &str, target: &str) -> String {
+        let trimmed = target.trim();
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return trimmed.to_string();
+        }
+        if let Ok(base_url) = Url::parse(base)
+            && let Ok(joined) = base_url.join(trimmed)
+        {
+            return joined.to_string();
+        }
+        trimmed.to_string()
+    }
+
+    /// Parse M3U / M3U8 playlist content and return extracted candidate stream URLs
+    pub fn parse_m3u(content: &str, base_url: &str) -> Vec<String> {
+        let mut urls = Vec::new();
+        let mut lines = content.lines().map(|l| l.trim());
+        while let Some(line) = lines.next() {
+            if line.is_empty() {
+                continue;
+            }
+            if line.starts_with('#') {
+                // If it's HLS stream inf, the following line is the variant playlist URL
+                if line.starts_with("#EXT-X-STREAM-INF:")
+                    && let Some(next_line) = lines.next()
+                {
+                    let next_trimmed = next_line.trim();
+                    if !next_trimmed.is_empty() && !next_trimmed.starts_with('#') {
+                        urls.push(resolve_url(base_url, next_trimmed));
+                    }
+                }
+                continue;
+            }
+            urls.push(resolve_url(base_url, line));
+        }
+        urls
+    }
+
+    /// Parse PLS playlist content and return extracted stream URLs
+    pub fn parse_pls(content: &str, base_url: &str) -> Vec<String> {
+        let mut entries: Vec<(u32, String)> = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+                continue;
+            }
+            if let Some((key, val)) = trimmed.split_once('=') {
+                let key_lower = key.trim().to_lowercase();
+                if key_lower.starts_with("file") {
+                    let num_str = key_lower.strip_prefix("file").unwrap_or("");
+                    let idx = num_str.parse::<u32>().unwrap_or(0);
+                    let val_trimmed = val.trim();
+                    if !val_trimmed.is_empty() {
+                        entries.push((idx, resolve_url(base_url, val_trimmed)));
+                    }
+                }
+            }
+        }
+        entries.sort_by_key(|e| e.0);
+        entries.into_iter().map(|e| e.1).collect()
+    }
+
+    /// Parse XSPF (XML Shareable Playlist Format) content
+    pub fn parse_xspf(content: &str, base_url: &str) -> Vec<String> {
+        let mut urls = Vec::new();
+        let mut remaining = content;
+        while let Some(start_tag) = remaining.find("<location>") {
+            let after_tag = &remaining[start_tag + 10..];
+            if let Some(end_tag) = after_tag.find("</location>") {
+                let loc = &after_tag[..end_tag].trim();
+                let decoded = decode_xml_entities(loc);
+                if !decoded.is_empty() {
+                    urls.push(resolve_url(base_url, &decoded));
+                }
+                remaining = &after_tag[end_tag + 11..];
+            } else {
+                break;
+            }
+        }
+        urls
+    }
+
+    /// Parse ASX (Advanced Stream Redirector) content
+    pub fn parse_asx(content: &str, base_url: &str) -> Vec<String> {
+        let mut urls = Vec::new();
+        let lower = content.to_lowercase();
+        let mut pos = 0;
+        while let Some(ref_idx) = lower[pos..].find("<ref ") {
+            let start = pos + ref_idx;
+            if let Some(end) = lower[start..].find('>') {
+                let tag_str = &content[start..start + end];
+                if let Some(href_idx) = tag_str.to_lowercase().find("href") {
+                    let after_href = tag_str[href_idx + 4..].trim_start();
+                    if let Some(stripped) = after_href.strip_prefix('=') {
+                        let after_eq = stripped.trim_start();
+                        if let Some(quote) = after_eq.chars().next()
+                            && (quote == '"' || quote == '\'')
+                            && let Some(close_quote) = after_eq[1..].find(quote)
+                        {
+                            let href = &after_eq[1..=close_quote];
+                            let decoded = decode_xml_entities(href.trim());
+                            if !decoded.is_empty() {
+                                urls.push(resolve_url(base_url, &decoded));
+                            }
+                        }
+                    }
+                }
+                pos = start + end + 1;
+            } else {
+                break;
+            }
+        }
+        urls
+    }
+
+    fn decode_xml_entities(s: &str) -> String {
+        s.replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+    }
+
+    /// Detect if a URL extension suggests a playlist file
+    pub fn is_playlist_url(url: &str) -> bool {
+        let url_path = url.split('?').next().unwrap_or(url).to_lowercase();
+        url_path.ends_with(".m3u")
+            || url_path.ends_with(".m3u8")
+            || url_path.ends_with(".pls")
+            || url_path.ends_with(".xspf")
+            || url_path.ends_with(".asx")
+            || url_path.ends_with(".wax")
+    }
+
+    /// Detect if Content-Type header indicates a playlist
+    pub fn is_playlist_content_type(ct: &str) -> bool {
+        let ct_lower = ct.to_lowercase();
+        ct_lower.contains("audio/x-scpls")
+            || ct_lower.contains("application/pls+xml")
+            || ct_lower.contains("audio/x-mpegurl")
+            || ct_lower.contains("application/x-mpegurl")
+            || ct_lower.contains("application/vnd.apple.mpegurl")
+            || ct_lower.contains("audio/mpegurl")
+            || ct_lower.contains("application/xspf+xml")
+            || ct_lower.contains("video/x-ms-asf")
+            || ct_lower.contains("audio/x-ms-wax")
+            || ct_lower.contains("text/uri-list")
+    }
+
+    /// Parse general playlist content into candidate URLs
+    pub fn parse_playlist_content(content: &str, base_url: &str) -> Vec<String> {
+        let trimmed = content.trim();
+        let trimmed_lower = trimmed.to_lowercase();
+        if trimmed_lower.starts_with("[playlist]") || trimmed_lower.contains("file1=") {
+            parse_pls(content, base_url)
+        } else if trimmed_lower.starts_with("#extm3u") || trimmed_lower.contains("#extinf") {
+            parse_m3u(content, base_url)
+        } else if trimmed_lower.contains("<playlist") && trimmed_lower.contains("<location>") {
+            parse_xspf(content, base_url)
+        } else if trimmed_lower.contains("<asx") || trimmed_lower.contains("<ref ") {
+            parse_asx(content, base_url)
+        } else {
+            // Default fallback: parse line-by-line
+            parse_m3u(content, base_url)
+        }
+    }
+
+    /// Check if M3U8 content is an HLS media segment playlist
+    pub fn is_hls_media_playlist(content: &str) -> bool {
+        content.contains("#EXT-X-TARGETDURATION") || content.contains("#EXT-X-MEDIA-SEQUENCE")
+    }
+
+    /// Extract media segments and durations from an HLS media playlist
+    pub fn parse_hls_segments(content: &str, base_url: &str) -> (Vec<String>, f32) {
+        let mut segments = Vec::new();
+        let mut target_duration = 5.0f32;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(val) = trimmed.strip_prefix("#EXT-X-TARGETDURATION:") {
+                if let Ok(d) = val.trim().parse::<f32>() {
+                    target_duration = d;
+                }
+            } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                segments.push(resolve_url(base_url, trimmed));
+            }
+        }
+
+        (segments, target_duration)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerStatus {
@@ -291,26 +488,7 @@ fn run_audio_worker(
                             Err(_) => return,
                         };
 
-                        let resp = match client.get(&url_clone).send().await {
-                            Ok(r) => r,
-                            Err(_) => return,
-                        };
-
-                        use futures_util::StreamExt;
-                        let mut stream = resp.bytes_stream();
-                        while let Some(chunk_res) = stream.next().await {
-                            if stop_signal_clone.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            match chunk_res {
-                                Ok(bytes) => {
-                                    if chunk_tx.send(bytes.to_vec()).is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(_) => break,
-                            }
-                        }
+                        stream_network_audio(client, url_clone, chunk_tx, stop_signal_clone).await;
                     });
                 });
 
@@ -358,6 +536,163 @@ fn run_audio_worker(
     }
 }
 
+async fn stream_network_audio(
+    client: reqwest::Client,
+    initial_url: String,
+    chunk_tx: Sender<Vec<u8>>,
+    stop_signal: Arc<AtomicBool>,
+) {
+    let mut urls_to_try = vec![initial_url];
+    let mut visited: HashSet<String> = HashSet::new();
+
+    while let Some(current_url) = urls_to_try.pop() {
+        if stop_signal.load(Ordering::Relaxed) {
+            break;
+        }
+
+        if !visited.insert(current_url.clone()) || visited.len() > 10 {
+            continue;
+        }
+
+        let resp = match client.get(&current_url).send().await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        if !resp.status().is_success() {
+            continue;
+        }
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let is_playlist = playlist::is_playlist_url(&current_url)
+            || playlist::is_playlist_content_type(&content_type);
+
+        if is_playlist {
+            if let Ok(text) = resp.text().await {
+                if playlist::is_hls_media_playlist(&text) {
+                    stream_hls_loop(client.clone(), current_url, text, &chunk_tx, &stop_signal).await;
+                    return;
+                } else {
+                    let candidates = playlist::parse_playlist_content(&text, &current_url);
+                    for cand in candidates.into_iter().rev() {
+                        if !visited.contains(&cand) {
+                            urls_to_try.push(cand);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Direct audio stream
+        let mut stream = resp.bytes_stream();
+        let mut first_chunk = true;
+
+        while let Some(chunk_res) = stream.next().await {
+            if stop_signal.load(Ordering::Relaxed) {
+                break;
+            }
+            match chunk_res {
+                Ok(bytes) => {
+                    // Check if initial bytes of an untyped response look like a playlist
+                    if first_chunk {
+                        first_chunk = false;
+                        if let Ok(text_peek) = std::str::from_utf8(&bytes) {
+                            let trimmed_lower = text_peek.trim_start().to_lowercase();
+                            if trimmed_lower.starts_with("#extm3u")
+                                || trimmed_lower.starts_with("[playlist]")
+                                || trimmed_lower.starts_with("<playlist")
+                                || trimmed_lower.starts_with("<asx")
+                            {
+                                let candidates =
+                                    playlist::parse_playlist_content(text_peek, &current_url);
+                                for cand in candidates.into_iter().rev() {
+                                    if !visited.contains(&cand) {
+                                        urls_to_try.push(cand);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    if chunk_tx.send(bytes.to_vec()).is_err() {
+                        return; // Receiver dropped or stopped
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        // If we streamed audio data, we're done (or stream disconnected)
+        if !first_chunk {
+            return;
+        }
+    }
+}
+
+async fn stream_hls_loop(
+    client: reqwest::Client,
+    playlist_url: String,
+    initial_content: String,
+    chunk_tx: &Sender<Vec<u8>>,
+    stop_signal: &Arc<AtomicBool>,
+) {
+    let mut played_segments: HashSet<String> = HashSet::new();
+    let mut current_content = initial_content;
+
+    loop {
+        if stop_signal.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let (segments, target_duration) =
+            playlist::parse_hls_segments(&current_content, &playlist_url);
+
+        for seg_url in segments {
+            if stop_signal.load(Ordering::Relaxed) {
+                return;
+            }
+            if played_segments.insert(seg_url.clone())
+                && let Ok(seg_resp) = client.get(&seg_url).send().await
+                && seg_resp.status().is_success()
+                && let Ok(bytes) = seg_resp.bytes().await
+                && chunk_tx.send(bytes.to_vec()).is_err()
+            {
+                return;
+            }
+        }
+
+        // Limit tracking set size to prevent unbounded memory growth
+        if played_segments.len() > 100 {
+            played_segments.clear();
+        }
+
+        // Wait before refreshing the live playlist
+        let sleep_duration = Duration::from_secs_f32((target_duration * 0.5).clamp(1.0, 10.0));
+        tokio::time::sleep(sleep_duration).await;
+
+        if stop_signal.load(Ordering::Relaxed) {
+            break;
+        }
+
+        match client.get(&playlist_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(text) = resp.text().await {
+                    current_content = text;
+                }
+            }
+            _ => break,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +723,102 @@ mod tests {
         let mut full_buf = [0u8; 18];
         reader.read_exact(&mut full_buf).unwrap();
         assert_eq!(&full_buf, b"Hello World Radio!");
+    }
+
+    #[test]
+    fn test_playlist_m3u_parsing() {
+        let m3u_data = r#"
+#EXTM3U
+#EXTINF:-1,Radio 1 Rock
+http://stream1.example.com/rock.mp3
+#EXTINF:-1,Radio 1 Backup
+http://stream2.example.com/rock.mp3
+"#;
+        let urls = playlist::parse_m3u(m3u_data, "http://example.com/listen.m3u");
+        assert_eq!(
+            urls,
+            vec![
+                "http://stream1.example.com/rock.mp3".to_string(),
+                "http://stream2.example.com/rock.mp3".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_playlist_pls_parsing() {
+        let pls_data = r#"
+[playlist]
+NumberOfEntries=2
+File1=http://stream1.example.com:8000/live
+Title1=Jazz Radio
+Length1=-1
+File2=http://stream2.example.com:8000/live
+Title2=Jazz Radio (Backup)
+Length2=-1
+Version=2
+"#;
+        let urls = playlist::parse_pls(pls_data, "http://example.com/listen.pls");
+        assert_eq!(
+            urls,
+            vec![
+                "http://stream1.example.com:8000/live".to_string(),
+                "http://stream2.example.com:8000/live".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_playlist_xspf_parsing() {
+        let xspf_data = r#"
+<?xml version="1.0" encoding="UTF-8"?>
+<playlist version="1" xmlns="http://xspf.org/ns/0/">
+    <trackList>
+        <track>
+            <location>http://stream.example.com/synthwave</location>
+            <title>Synthwave Station</title>
+        </track>
+    </trackList>
+</playlist>
+"#;
+        let urls = playlist::parse_xspf(xspf_data, "http://example.com/listen.xspf");
+        assert_eq!(urls, vec!["http://stream.example.com/synthwave".to_string()]);
+    }
+
+    #[test]
+    fn test_playlist_asx_parsing() {
+        let asx_data = r#"
+<asx version="3.0">
+    <entry>
+        <title>Ambient Station</title>
+        <ref href="http://stream.example.com/ambient.mp3" />
+    </entry>
+</asx>
+"#;
+        let urls = playlist::parse_asx(asx_data, "http://example.com/listen.asx");
+        assert_eq!(urls, vec!["http://stream.example.com/ambient.mp3".to_string()]);
+    }
+
+    #[test]
+    fn test_hls_segment_parsing() {
+        let hls_data = r#"
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:100
+#EXTINF:6.0,
+segment100.aac
+#EXTINF:6.0,
+segment101.aac
+"#;
+        let (segments, target_duration) =
+            playlist::parse_hls_segments(hls_data, "http://example.com/hls/live.m3u8");
+        assert_eq!(target_duration, 6.0);
+        assert_eq!(
+            segments,
+            vec![
+                "http://example.com/hls/segment100.aac".to_string(),
+                "http://example.com/hls/segment101.aac".to_string(),
+            ]
+        );
     }
 }
