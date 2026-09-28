@@ -204,12 +204,12 @@ pub fn render_vintage_stereo(
     }
 
     // 1. Draw outer chassis & bezel
-    d.draw_rectangle_rounded(layout.bezel_rect, 0.04, 8, COLOR_CHASSIS_BG);
-    d.draw_rectangle_rounded_lines(layout.bezel_rect, 0.04, 8, COLOR_BEZEL_OUTLINE);
+    d.draw_rectangle_rounded(layout.bezel_rect, 0.04, 16, COLOR_CHASSIS_BG);
+    d.draw_rectangle_rounded_lines(layout.bezel_rect, 0.04, 16, COLOR_BEZEL_OUTLINE);
 
     // 2. Draw Backlit Glass Display (VFD cyan / amber glow)
-    d.draw_rectangle_rounded(layout.display_rect, 0.06, 6, COLOR_VFD_GLASS_BG);
-    d.draw_rectangle_rounded_lines(layout.display_rect, 0.06, 6, COLOR_VFD_GLASS_BORDER);
+    d.draw_rectangle_rounded(layout.display_rect, 0.06, 12, COLOR_VFD_GLASS_BG);
+    d.draw_rectangle_rounded_lines(layout.display_rect, 0.06, 12, COLOR_VFD_GLASS_BORDER);
 
     let active_band_label = settings
         .get_band(ui.active_band_idx)
@@ -468,8 +468,8 @@ pub fn render_vintage_stereo(
     }
 
     // 7. Frequency Dial & Sweeping Needle
-    d.draw_rectangle_rounded(layout.dial_track_rect, 0.1, 4, COLOR_DIAL_TRACK_BG);
-    d.draw_rectangle_rounded_lines(layout.dial_track_rect, 0.1, 4, COLOR_BEZEL_OUTLINE);
+    d.draw_rectangle_rounded(layout.dial_track_rect, 0.1, 12, COLOR_DIAL_TRACK_BG);
+    d.draw_rectangle_rounded_lines(layout.dial_track_rect, 0.1, 12, COLOR_BEZEL_OUTLINE);
 
     // Draw Frequency Calibration Ticks (88, 92, 96, 100, 104, 108 MHz)
     let freq_labels = ["88", "92", "96", "100", "104", "108"];
@@ -479,11 +479,10 @@ pub fn render_vintage_stereo(
         let ty1 = layout.dial_track_rect.y + 4.0;
         let ty2 = layout.dial_track_rect.y + 12.0;
 
-        d.draw_line(
-            tx as i32,
-            ty1 as i32,
-            tx as i32,
-            ty2 as i32,
+        d.draw_line_ex(
+            Vector2::new(tx, ty1),
+            Vector2::new(tx, ty2),
+            1.5,
             COLOR_DIAL_TICK,
         );
         d.draw_text(

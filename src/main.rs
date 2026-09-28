@@ -60,10 +60,20 @@ fn main() {
         .title("RaydioSurfer - Vintage Internet Radio")
         .resizable()
         .highdpi()
+        .msaa_4x()
         .always_run()
         .build();
 
     rl.set_target_fps(60);
+
+    // Apply bilinear texture filtering to font atlas for smooth high-DPI scaling
+    unsafe {
+        let default_font = raylib::ffi::GetFontDefault();
+        raylib::ffi::SetTextureFilter(
+            default_font.texture,
+            raylib::ffi::TextureFilter::TEXTURE_FILTER_BILINEAR as i32,
+        );
+    }
 
     // Main responsive loop
     while !rl.window_should_close() {
@@ -328,6 +338,7 @@ mod tests {
             .title("RaydioSurfer - Vintage Internet Radio")
             .resizable()
             .highdpi()
+            .msaa_4x()
             .always_run()
             .vsync();
     }
