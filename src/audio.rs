@@ -212,8 +212,88 @@ pub enum PlayerStatus {
     Error(String),
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct StreamDiagnostics {
+    pub last_url: String,
+    pub last_http_status: Option<u16>,
+    pub last_content_type: Option<String>,
+    pub last_error: Option<String>,
+    pub bytes_streamed: usize,
+    pub hls_active: bool,
+    pub resolved_stream_type: Option<String>,
+}
+
+pub fn build_error_message(
+    decoder_err: &rodio::decoder::DecoderError,
+    diag: &StreamDiagnostics,
+    format_hint: Option<&str>,
+) -> String {
+    let hint_suffix = match format_hint {
+        Some(hint) if !hint.trim().is_empty() && hint.trim() != "Audio Stream" => {
+            format!(" [{}]", hint.trim())
+        }
+        _ => String::new(),
+    };
+
+    if diag.bytes_streamed == 0 {
+        if let Some(ref net_err) = diag.last_error {
+            return format!("ERROR: {net_err}{hint_suffix}");
+        }
+        if let Some(code) = diag.last_http_status
+            && code != 200
+        {
+            return format!("ERROR: HTTP {code}{hint_suffix}");
+        }
+        if let Some(ref ct) = diag.last_content_type
+            && ct.contains("text/html")
+        {
+            return format!("ERROR: Webpage received instead of audio stream{hint_suffix}");
+        }
+        return format!("ERROR: Stream connection closed without audio data{hint_suffix}");
+    }
+
+    // Bytes were streamed, but decoding failed
+    if let Some(ref ct) = diag.last_content_type {
+        let ct_lower = ct.to_lowercase();
+        if ct_lower.contains("audio/x-ms-wma")
+            || ct_lower.contains("audio/wma")
+            || ct_lower.contains("video/x-ms-asf")
+        {
+            return format!("ERROR: Unsupported stream format (WMA/ASF){hint_suffix}");
+        }
+        if ct_lower.contains("text/html") {
+            return format!("ERROR: Invalid audio stream (HTTP HTML page){hint_suffix}");
+        }
+    }
+
+    let err_str = decoder_err.to_string();
+    let err_lower = err_str.to_lowercase();
+    let clean_reason = if err_lower.contains("recognized") || err_lower.contains("no supported format") {
+        "Unrecognized audio format"
+    } else if err_lower.contains("unsupported") {
+        "Unsupported audio codec/profile"
+    } else if err_lower.contains("decode") {
+        "Audio stream decode failed"
+    } else {
+        err_str.as_str()
+    };
+
+    if let Some(ref ct) = diag.last_content_type
+        && !ct.is_empty()
+        && !ct.starts_with("application/octet-stream")
+    {
+        format!("ERROR: {clean_reason} ({ct}){hint_suffix}")
+    } else {
+        format!("ERROR: {clean_reason}{hint_suffix}")
+    }
+}
+
 pub enum AudioCommand {
-    Play { name: String, url: String },
+    Play {
+        name: String,
+        url: String,
+        format_hint: Option<String>,
+    },
     Stop,
     SetVolume(f32),
 }
@@ -249,7 +329,27 @@ impl AudioController {
     }
 
     pub fn play(&self, name: String, url: String) {
-        let _ = self.sender.send(AudioCommand::Play { name, url });
+        let _ = self.sender.send(AudioCommand::Play {
+            name,
+            url,
+            format_hint: None,
+        });
+    }
+
+    pub fn play_with_hint(&self, name: String, url: String, format_hint: Option<String>) {
+        let _ = self.sender.send(AudioCommand::Play {
+            name,
+            url,
+            format_hint,
+        });
+    }
+
+    pub fn play_station(&self, st: &crate::api::CachedStation) {
+        self.play_with_hint(
+            st.name.clone(),
+            st.url.clone(),
+            Some(st.format_description()),
+        );
     }
 
     pub fn stop(&self) {
@@ -448,7 +548,11 @@ fn run_audio_worker(
 
     while let Ok(cmd) = receiver.recv() {
         match cmd {
-            AudioCommand::Play { name, url } => {
+            AudioCommand::Play {
+                name,
+                url,
+                format_hint,
+            } => {
                 // Stop any current playback
                 if let Some(stop) = current_stop_signal.take() {
                     stop.store(true, Ordering::Relaxed);
@@ -463,9 +567,11 @@ fn run_audio_worker(
 
                 let stop_signal = Arc::new(AtomicBool::new(false));
                 let (chunk_tx, chunk_rx) = std::sync::mpsc::channel();
+                let diagnostics = Arc::new(Mutex::new(StreamDiagnostics::default()));
 
                 let url_clone = url.clone();
                 let stop_signal_clone = Arc::clone(&stop_signal);
+                let diag_clone = Arc::clone(&diagnostics);
 
                 // Spawn network downloader thread
                 thread::spawn(move || {
@@ -488,7 +594,14 @@ fn run_audio_worker(
                             Err(_) => return,
                         };
 
-                        stream_network_audio(client, url_clone, chunk_tx, stop_signal_clone).await;
+                        stream_network_audio(
+                            client,
+                            url_clone,
+                            chunk_tx,
+                            stop_signal_clone,
+                            diag_clone,
+                        )
+                        .await;
                     });
                 });
 
@@ -510,8 +623,10 @@ fn run_audio_worker(
                     }
                     Err(e) => {
                         stop_signal.store(true, Ordering::Relaxed);
+                        let diag_info = diagnostics.lock().map(|d| d.clone()).unwrap_or_default();
+                        let error_msg = build_error_message(&e, &diag_info, format_hint.as_deref());
                         if let Ok(mut s) = status.lock() {
-                            *s = PlayerStatus::Error(format!("Decode error: {e}"));
+                            *s = PlayerStatus::Error(error_msg);
                         }
                     }
                 }
@@ -541,6 +656,7 @@ async fn stream_network_audio(
     initial_url: String,
     chunk_tx: Sender<Vec<u8>>,
     stop_signal: Arc<AtomicBool>,
+    diagnostics: Arc<Mutex<StreamDiagnostics>>,
 ) {
     let mut urls_to_try = vec![initial_url];
     let mut visited: HashSet<String> = HashSet::new();
@@ -554,15 +670,29 @@ async fn stream_network_audio(
             continue;
         }
 
-        let resp = match client.get(&current_url).send().await {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-
-        if !resp.status().is_success() {
-            continue;
+        if let Ok(mut diag) = diagnostics.lock() {
+            diag.last_url = current_url.clone();
         }
 
+        let resp = match client.get(&current_url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                if let Ok(mut diag) = diagnostics.lock() {
+                    let err_desc = if e.is_timeout() {
+                        "Connection timed out (10s)".to_string()
+                    } else if e.is_connect() {
+                        "Connection failed / host unreachable".to_string()
+                    } else {
+                        format!("Network request failed: {e}")
+                    };
+                    diag.last_error = Some(err_desc);
+                }
+                continue;
+            }
+        };
+
+        let status = resp.status();
+        let status_code = status.as_u16();
         let content_type = resp
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -570,22 +700,61 @@ async fn stream_network_audio(
             .unwrap_or("")
             .to_string();
 
+        if let Ok(mut diag) = diagnostics.lock() {
+            diag.last_http_status = Some(status_code);
+            if !content_type.is_empty() {
+                diag.last_content_type = Some(content_type.clone());
+            }
+        }
+
+        if !status.is_success() {
+            if let Ok(mut diag) = diagnostics.lock() {
+                let reason = status.canonical_reason().unwrap_or("Error");
+                diag.last_error = Some(format!("HTTP {status_code} {reason}"));
+            }
+            continue;
+        }
+
         let is_playlist = playlist::is_playlist_url(&current_url)
             || playlist::is_playlist_content_type(&content_type);
 
         if is_playlist {
+            if let Ok(mut diag) = diagnostics.lock() {
+                diag.resolved_stream_type = Some("Playlist".to_string());
+            }
             if let Ok(text) = resp.text().await {
                 if playlist::is_hls_media_playlist(&text) {
-                    stream_hls_loop(client.clone(), current_url, text, &chunk_tx, &stop_signal).await;
+                    if let Ok(mut diag) = diagnostics.lock() {
+                        diag.hls_active = true;
+                        diag.resolved_stream_type = Some("HLS Playlist".to_string());
+                    }
+                    stream_hls_loop(
+                        client.clone(),
+                        current_url,
+                        text,
+                        &chunk_tx,
+                        &stop_signal,
+                        Arc::clone(&diagnostics),
+                    )
+                    .await;
                     return;
                 } else {
                     let candidates = playlist::parse_playlist_content(&text, &current_url);
-                    for cand in candidates.into_iter().rev() {
-                        if !visited.contains(&cand) {
-                            urls_to_try.push(cand);
+                    if candidates.is_empty() {
+                        if let Ok(mut diag) = diagnostics.lock() {
+                            diag.last_error =
+                                Some("Playlist contained no playable stream URLs".to_string());
+                        }
+                    } else {
+                        for cand in candidates.into_iter().rev() {
+                            if !visited.contains(&cand) {
+                                urls_to_try.push(cand);
+                            }
                         }
                     }
                 }
+            } else if let Ok(mut diag) = diagnostics.lock() {
+                diag.last_error = Some("Failed to read playlist text from server".to_string());
             }
             continue;
         }
@@ -622,11 +791,20 @@ async fn stream_network_audio(
                         }
                     }
 
+                    let len = bytes.len();
                     if chunk_tx.send(bytes.to_vec()).is_err() {
                         return; // Receiver dropped or stopped
                     }
+                    if let Ok(mut diag) = diagnostics.lock() {
+                        diag.bytes_streamed += len;
+                    }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    if let Ok(mut diag) = diagnostics.lock() {
+                        diag.last_error = Some(format!("Stream read error: {e}"));
+                    }
+                    break;
+                }
             }
         }
 
@@ -643,6 +821,7 @@ async fn stream_hls_loop(
     initial_content: String,
     chunk_tx: &Sender<Vec<u8>>,
     stop_signal: &Arc<AtomicBool>,
+    diagnostics: Arc<Mutex<StreamDiagnostics>>,
 ) {
     let mut played_segments: HashSet<String> = HashSet::new();
     let mut current_content = initial_content;
@@ -655,17 +834,41 @@ async fn stream_hls_loop(
         let (segments, target_duration) =
             playlist::parse_hls_segments(&current_content, &playlist_url);
 
+        if segments.is_empty()
+            && let Ok(mut diag) = diagnostics.lock()
+            && diag.bytes_streamed == 0
+        {
+            diag.last_error = Some("HLS manifest contained no media segments".to_string());
+        }
+
         for seg_url in segments {
             if stop_signal.load(Ordering::Relaxed) {
                 return;
             }
-            if played_segments.insert(seg_url.clone())
-                && let Ok(seg_resp) = client.get(&seg_url).send().await
-                && seg_resp.status().is_success()
-                && let Ok(bytes) = seg_resp.bytes().await
-                && chunk_tx.send(bytes.to_vec()).is_err()
-            {
-                return;
+            if played_segments.insert(seg_url.clone()) {
+                if let Ok(mut diag) = diagnostics.lock() {
+                    diag.last_url = seg_url.clone();
+                }
+                if let Ok(seg_resp) = client.get(&seg_url).send().await {
+                    if seg_resp.status().is_success() {
+                        if let Ok(bytes) = seg_resp.bytes().await {
+                            let len = bytes.len();
+                            if chunk_tx.send(bytes.to_vec()).is_err() {
+                                return;
+                            }
+                            if let Ok(mut diag) = diagnostics.lock() {
+                                diag.bytes_streamed += len;
+                            }
+                        }
+                    } else if let Ok(mut diag) = diagnostics.lock() {
+                        let st = seg_resp.status();
+                        diag.last_error = Some(format!(
+                            "HLS segment HTTP {} {}",
+                            st.as_u16(),
+                            st.canonical_reason().unwrap_or("Error")
+                        ));
+                    }
+                }
             }
         }
 
@@ -819,6 +1022,57 @@ segment101.aac
                 "http://example.com/hls/segment100.aac".to_string(),
                 "http://example.com/hls/segment101.aac".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn test_build_error_message_formatting() {
+        let err = rodio::decoder::DecoderError::UnrecognizedFormat;
+
+        // 1. HTTP 404 with format hint
+        let diag_404 = StreamDiagnostics {
+            last_http_status: Some(404),
+            last_error: Some("HTTP 404 Not Found".to_string()),
+            bytes_streamed: 0,
+            ..Default::default()
+        };
+        let msg_404 = build_error_message(&err, &diag_404, Some("MP3 128kbps"));
+        assert_eq!(msg_404, "ERROR: HTTP 404 Not Found [MP3 128kbps]");
+
+        // 2. Connection Timeout with HLS format hint
+        let diag_timeout = StreamDiagnostics {
+            last_error: Some("Connection timed out (10s)".to_string()),
+            bytes_streamed: 0,
+            ..Default::default()
+        };
+        let msg_timeout = build_error_message(&err, &diag_timeout, Some("HLS AAC 320kbps"));
+        assert_eq!(
+            msg_timeout,
+            "ERROR: Connection timed out (10s) [HLS AAC 320kbps]"
+        );
+
+        // 3. Unsupported WMA codec
+        let diag_wma = StreamDiagnostics {
+            last_content_type: Some("audio/x-ms-wma".to_string()),
+            bytes_streamed: 1024,
+            ..Default::default()
+        };
+        let msg_wma = build_error_message(&err, &diag_wma, Some("WMA 64kbps"));
+        assert_eq!(
+            msg_wma,
+            "ERROR: Unsupported stream format (WMA/ASF) [WMA 64kbps]"
+        );
+
+        // 4. Decode failed on streamed bytes with format
+        let diag_decode = StreamDiagnostics {
+            last_content_type: Some("audio/aac".to_string()),
+            bytes_streamed: 4096,
+            ..Default::default()
+        };
+        let msg_decode = build_error_message(&err, &diag_decode, Some("AAC 256kbps"));
+        assert_eq!(
+            msg_decode,
+            "ERROR: Unrecognized audio format (audio/aac) [AAC 256kbps]"
         );
     }
 }

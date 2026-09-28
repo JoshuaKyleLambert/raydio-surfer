@@ -191,7 +191,7 @@ fn main() {
             && let Some(st) = current_station
             && ui.is_power_on
         {
-            audio.play(st.name.clone(), st.url.clone());
+            audio.play_station(st);
             last_played_channel = Some((st.name.clone(), st.url.clone()));
         }
 
@@ -201,7 +201,7 @@ fn main() {
             if ui.is_power_on {
                 audio.set_volume(ui.volume);
                 if let Some(st) = current_station {
-                    audio.play(st.name.clone(), st.url.clone());
+                    audio.play_station(st);
                     last_played_channel = Some((st.name.clone(), st.url.clone()));
                 }
             } else {
@@ -216,7 +216,7 @@ fn main() {
             if let Some(st) = current_station {
                 settings.set_current_station(Some(st.clone()));
                 if ui.is_power_on {
-                    audio.play(st.name.clone(), st.url.clone());
+                    audio.play_station(st);
                 }
             } else {
                 settings.set_current_station(None);
@@ -285,7 +285,7 @@ pub fn tune_to_preset(preset_idx: usize, ctx: &mut PresetTuneContext<'_>) {
         }
         ctx.settings.set_current_station(Some(st.clone()));
         if ctx.ui.is_power_on {
-            ctx.audio.play(st.name.clone(), st.url.clone());
+            ctx.audio.play_station(&st);
         }
         *ctx.last_played_channel = Some((st.name.clone(), st.url.clone()));
         ctx.ui.status_feedback = Some((format!("Tuned to Preset [{}]", preset_idx + 1), 3.0));

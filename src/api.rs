@@ -33,6 +33,27 @@ pub struct CachedStation {
     pub hls: u8,
 }
 
+impl CachedStation {
+    pub fn format_description(&self) -> String {
+        let mut parts = Vec::new();
+        if self.hls != 0 || self.url.to_lowercase().contains(".m3u8") {
+            parts.push("HLS".to_string());
+        }
+        let codec_clean = self.codec.trim().to_uppercase();
+        if !codec_clean.is_empty() && (parts.is_empty() || !parts.contains(&codec_clean)) {
+            parts.push(codec_clean);
+        }
+        if self.bitrate > 0 {
+            parts.push(format!("{}kbps", self.bitrate));
+        }
+        if parts.is_empty() {
+            "Audio Stream".to_string()
+        } else {
+            parts.join(" ")
+        }
+    }
+}
+
 pub fn is_supported_codec(codec: &str) -> bool {
     let c = codec.trim().to_uppercase();
     if c.is_empty() {
@@ -757,5 +778,41 @@ mod tests {
         assert!(!is_supported_stream("", "", "MP3"));
         // Unsupported codec
         assert!(!is_supported_stream("http://stream.com/live.wma", "", "WMA"));
+    }
+
+    #[test]
+    fn test_format_description() {
+        let st1 = CachedStation {
+            codec: "MP3".into(),
+            bitrate: 128,
+            hls: 0,
+            ..Default::default()
+        };
+        assert_eq!(st1.format_description(), "MP3 128kbps");
+
+        let st2 = CachedStation {
+            codec: "AAC".into(),
+            bitrate: 320,
+            hls: 1,
+            ..Default::default()
+        };
+        assert_eq!(st2.format_description(), "HLS AAC 320kbps");
+
+        let st3 = CachedStation {
+            codec: "OGG".into(),
+            bitrate: 0,
+            hls: 0,
+            ..Default::default()
+        };
+        assert_eq!(st3.format_description(), "OGG");
+
+        let st4 = CachedStation {
+            url: "http://stream.m3u8".into(),
+            ..Default::default()
+        };
+        assert_eq!(st4.format_description(), "HLS");
+
+        let st5 = CachedStation::default();
+        assert_eq!(st5.format_description(), "Audio Stream");
     }
 }

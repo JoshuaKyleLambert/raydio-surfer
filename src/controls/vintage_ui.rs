@@ -35,6 +35,11 @@ pub struct VintageUiState {
     pub title_anim_timer: f32,
     pub title_anim_pause: f32,
     pub last_station_title: String,
+    pub status_anim_offset: usize,
+    pub status_anim_direction: i8,
+    pub status_anim_timer: f32,
+    pub status_anim_pause: f32,
+    pub last_status_text: String,
     pub is_loading: bool,
     pub loading_timer: f32,
     pub requested_preset: Option<usize>,
@@ -55,6 +60,11 @@ impl VintageUiState {
             title_anim_timer: 0.0,
             title_anim_pause: TITLE_ANIM_PAUSE_DURATION,
             last_station_title: String::new(),
+            status_anim_offset: 0,
+            status_anim_direction: 1,
+            status_anim_timer: 0.0,
+            status_anim_pause: TITLE_ANIM_PAUSE_DURATION,
+            last_status_text: String::new(),
             is_loading: false,
             loading_timer: 0.0,
             requested_preset: None,
@@ -295,46 +305,61 @@ pub fn render_vintage_stereo(
 
     // Display Bottom Line: Audio playback status or feedback message
     let status_y = title_y + layout.font_display_large + 3;
-    if let Some((ref feedback, _)) = ui.status_feedback {
-        d.draw_text(
-            feedback,
-            disp_x,
-            status_y,
-            layout.font_display_small,
-            COLOR_VFD_AMBER,
-        );
+    let (status_text, status_color) = if let Some((ref feedback, _)) = ui.status_feedback {
+        (feedback.clone(), COLOR_VFD_AMBER)
     } else if !ui.is_power_on {
-        d.draw_text(
-            "STATUS: [POWER OFF]",
-            disp_x,
-            status_y,
-            layout.font_display_small,
-            COLOR_VFD_CYAN_DIM,
-        );
+        ("STATUS: [POWER OFF]".to_string(), COLOR_VFD_CYAN_DIM)
     } else if ui.is_loading {
-        d.draw_text(
-            "STATUS: [QUERYING RADIO-BROWSER DIRECTORY...]",
-            disp_x,
-            status_y,
-            layout.font_display_small,
+        (
+            "STATUS: [QUERYING RADIO-BROWSER DIRECTORY...]".to_string(),
             COLOR_VFD_AMBER,
-        );
+        )
     } else {
-        let player_status = audio.status();
-        let (status_str, status_color) = match player_status {
-            PlayerStatus::Stopped => ("STATUS: [STOPPED]", COLOR_VFD_CYAN_DIM),
-            PlayerStatus::Connecting => ("STATUS: [CONNECTING / BUFFERING...]", COLOR_VFD_AMBER),
-            PlayerStatus::Playing(_) => ("STATUS: [LIVE BROADCASTING]", COLOR_VFD_CYAN_GLOW),
-            PlayerStatus::Error(ref err) => (err.as_str(), COLOR_NEEDLE_RED),
-        };
-        d.draw_text(
-            status_str,
-            disp_x,
-            status_y,
-            layout.font_display_small,
-            status_color,
-        );
+        match audio.status() {
+            PlayerStatus::Stopped => ("STATUS: [STOPPED]".to_string(), COLOR_VFD_CYAN_DIM),
+            PlayerStatus::Connecting => {
+                ("STATUS: [CONNECTING / BUFFERING...]".to_string(), COLOR_VFD_AMBER)
+            }
+            PlayerStatus::Playing(_) => {
+                ("STATUS: [LIVE BROADCASTING]".to_string(), COLOR_VFD_CYAN_GLOW)
+            }
+            PlayerStatus::Error(ref err) => (err.clone(), COLOR_NEEDLE_RED),
+        }
+    };
+
+    if ui.last_status_text != status_text {
+        ui.last_status_text = status_text.clone();
+        ui.status_anim_offset = 0;
+        ui.status_anim_direction = 1;
+        ui.status_anim_timer = 0.0;
+        ui.status_anim_pause = TITLE_ANIM_PAUSE_DURATION;
     }
+
+    let max_status_width = (layout.display_rect.width - 24.0).max(10.0) as i32;
+    let (display_status, max_status_offset) = compute_title_marquee_slice(
+        &status_text,
+        max_status_width,
+        layout.font_display_small,
+        ui.status_anim_offset,
+        |s, size| d.measure_text(s, size),
+    );
+
+    update_title_animation(
+        dt,
+        max_status_offset,
+        &mut ui.status_anim_offset,
+        &mut ui.status_anim_direction,
+        &mut ui.status_anim_timer,
+        &mut ui.status_anim_pause,
+    );
+
+    d.draw_text(
+        &display_status,
+        disp_x,
+        status_y,
+        layout.font_display_small,
+        status_color,
+    );
 
     // Oscillating vintage scanning beam across the bottom of the VFD glass when loading
     if ui.is_loading {
@@ -361,7 +386,9 @@ pub fn render_vintage_stereo(
         ui.is_power_on = !ui.is_power_on;
         if ui.is_power_on {
             audio.set_volume(ui.volume);
-            if active_filtered_count > 0 && !current_station_url.is_empty() {
+            if let Some(st) = ctx.current_station {
+                audio.play_station(st);
+            } else if active_filtered_count > 0 && !current_station_url.is_empty() {
                 audio.play(
                     current_station_name.to_string(),
                     current_station_url.to_string(),
@@ -576,10 +603,14 @@ pub fn render_vintage_stereo(
         match audio.status() {
             PlayerStatus::Playing(_) | PlayerStatus::Connecting => audio.stop(),
             _ => {
-                audio.play(
-                    current_station_name.to_string(),
-                    current_station_url.to_string(),
-                );
+                if let Some(st) = ctx.current_station {
+                    audio.play_station(st);
+                } else {
+                    audio.play(
+                        current_station_name.to_string(),
+                        current_station_url.to_string(),
+                    );
+                }
             }
         }
     }
