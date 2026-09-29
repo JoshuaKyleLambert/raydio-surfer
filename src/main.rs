@@ -13,6 +13,7 @@ mod api;
 mod audio;
 mod bands;
 mod controls;
+mod dsp;
 mod layout;
 mod paths;
 mod presets;
@@ -28,9 +29,9 @@ fn main() {
 
     let mut settings = Settings::load();
 
-    let audio = AudioController::new();
+    let audio = AudioController::with_dsp_settings(settings.dsp.clone());
     audio.set_volume(settings.volume);
-    let mut ui = VintageUiState::new(settings.volume);
+    let mut ui = VintageUiState::with_dsp(settings.volume, &settings.dsp);
 
     let mut last_search = ui.search_input.clone();
     let mut last_band_idx = ui.active_band_idx;
@@ -56,8 +57,9 @@ fn main() {
 
     let mut last_played_channel: Option<(String, String)> = None;
 
+    let init_height = if settings.dsp.eq_expanded { 440 } else { 270 };
     let (mut rl, thread) = raylib::init()
-        .size(920, 270)
+        .size(920, init_height)
         .title("RaydioSurfer - Vintage Internet Radio")
         .resizable()
         .highdpi()
@@ -242,6 +244,19 @@ fn main() {
             }
         }
 
+        // Handle window size expansion / collapsing when EQ button is toggled
+        if let Some(expanded) = ui.eq_window_toggle_requested.take() {
+            let current_w = rl.get_screen_width();
+            let current_h = rl.get_screen_height();
+            if expanded {
+                if current_h <= 300 {
+                    rl.set_window_size(current_w, 440);
+                }
+            } else if current_h > 350 {
+                rl.set_window_size(current_w, 270);
+            }
+        }
+
         // Begin drawing
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(BACKGROUND_COLOR);
@@ -249,7 +264,12 @@ fn main() {
         // Dynamically compute responsive layout from current screen dimensions
         let screen_w = d.get_screen_width() as f32;
         let screen_h = d.get_screen_height() as f32;
-        let layout = StereoLayout::compute(screen_w, screen_h, settings.bands.slots.len());
+        let layout = StereoLayout::compute(
+            screen_w,
+            screen_h,
+            settings.bands.slots.len(),
+            ui.eq_expanded,
+        );
 
         let total_stations_count = loader.total_cached_count().max(active_stations.len());
         let ctx = controls::vintage_ui::StationViewContext {
@@ -789,5 +809,26 @@ mod tests {
         let preset_to_recall = ui.requested_preset.take();
         assert_eq!(preset_to_recall, Some(2));
         assert_eq!(ui.requested_preset, None);
+    }
+
+    #[test]
+    fn test_gui_eq_expansion_toggle_flow() {
+        let mut ui = VintageUiState::new(0.75);
+        assert!(!ui.eq_expanded);
+        assert_eq!(ui.eq_window_toggle_requested, None);
+
+        // User clicks the EQ toggle button
+        ui.eq_expanded = true;
+        ui.eq_window_toggle_requested = Some(true);
+
+        // Frame loop processes the request to expand window
+        let toggle = ui.eq_window_toggle_requested.take();
+        assert_eq!(toggle, Some(true));
+        assert_eq!(ui.eq_window_toggle_requested, None);
+
+        let layout = StereoLayout::compute(920.0, 440.0, 9, ui.eq_expanded);
+        assert!(layout.eq_expanded);
+        assert!(layout.eq_panel_rect.height > 80.0);
+        assert_eq!(layout.eq_band_rects.len(), 10);
     }
 }

@@ -1,5 +1,6 @@
 use crate::api::CachedStation;
 use crate::bands::{BandSlot, Bands};
+use crate::dsp::AudioDspSettings;
 use crate::paths::{self, SETTINGS_FILENAME};
 use crate::presets::Presets;
 use crate::storage;
@@ -18,6 +19,8 @@ pub struct Settings {
     pub presets: Presets,
     #[serde(default)]
     pub current_station: Option<CachedStation>,
+    #[serde(default)]
+    pub dsp: AudioDspSettings,
 }
 
 fn default_volume() -> f32 {
@@ -31,6 +34,7 @@ impl Default for Settings {
             bands: Bands::default(),
             presets: Presets::default(),
             current_station: None,
+            dsp: AudioDspSettings::default(),
         }
     }
 }
@@ -122,6 +126,45 @@ impl Settings {
     pub fn set_current_station(&mut self, station: Option<CachedStation>) {
         if self.current_station != station {
             self.current_station = station;
+            self.save();
+        }
+    }
+
+    pub fn set_eq_enabled(&mut self, enabled: bool) {
+        if self.dsp.eq_enabled != enabled {
+            self.dsp.eq_enabled = enabled;
+            self.save();
+        }
+    }
+
+    pub fn set_eq_bands(&mut self, bands: [f32; crate::dsp::NUM_EQ_BANDS]) {
+        if self.dsp.eq_bands != bands {
+            self.dsp.eq_bands = bands;
+            self.save();
+        }
+    }
+
+    pub fn set_eq_band(&mut self, idx: usize, gain_db: f32) {
+        if idx < crate::dsp::NUM_EQ_BANDS {
+            let clamped = gain_db.clamp(crate::dsp::EQ_MIN_GAIN_DB, crate::dsp::EQ_MAX_GAIN_DB);
+            if (self.dsp.eq_bands[idx] - clamped).abs() > 0.01 {
+                self.dsp.eq_bands[idx] = clamped;
+                self.save();
+            }
+        }
+    }
+
+    pub fn set_balance(&mut self, balance: f32) {
+        let clamped = balance.clamp(crate::dsp::BALANCE_MIN, crate::dsp::BALANCE_MAX);
+        if (self.dsp.balance - clamped).abs() > 0.005 {
+            self.dsp.balance = clamped;
+            self.save();
+        }
+    }
+
+    pub fn set_eq_expanded(&mut self, expanded: bool) {
+        if self.dsp.eq_expanded != expanded {
+            self.dsp.eq_expanded = expanded;
             self.save();
         }
     }
@@ -292,6 +335,30 @@ mod tests {
         assert_eq!(loaded_settings.get_preset(0).unwrap().name, "Preset Station");
         assert_eq!(loaded_cache.len(), 2);
         assert_eq!(loaded_cache[0].name, "Cached Catalog Station 1");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_dsp_settings_persistence() {
+        let temp_dir = std::env::temp_dir().join("raydio_surfer_dsp_test");
+        let settings_file = temp_dir.join("settings.json");
+
+        let mut settings = Settings::default();
+        settings.set_eq_enabled(true);
+        settings.set_eq_band(0, 4.5);
+        settings.set_eq_band(9, -3.0);
+        settings.set_balance(0.35);
+        settings.set_eq_expanded(true);
+
+        storage::save_json_pretty(&settings_file, &settings).unwrap();
+
+        let loaded: Settings = storage::load_json(&settings_file).unwrap();
+        assert!(loaded.dsp.eq_enabled);
+        assert!((loaded.dsp.eq_bands[0] - 4.5).abs() < 1e-3);
+        assert!((loaded.dsp.eq_bands[9] - (-3.0)).abs() < 1e-3);
+        assert!((loaded.dsp.balance - 0.35).abs() < 1e-3);
+        assert!(loaded.dsp.eq_expanded);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

@@ -29,6 +29,12 @@ pub struct VintageUiState {
     pub active_index: usize,
     pub is_power_on: bool,
     pub volume: f32,
+    pub eq_enabled: bool,
+    pub eq_bands: [f32; crate::dsp::NUM_EQ_BANDS],
+    pub balance: f32,
+    pub eq_expanded: bool,
+    pub eq_window_toggle_requested: Option<bool>,
+    pub dragging_band_idx: Option<usize>,
     pub status_feedback: Option<(String, f32)>, // Feedback text and timer
     pub title_anim_offset: usize,
     pub title_anim_direction: i8, // 1 for forward, -1 for reverse
@@ -47,6 +53,10 @@ pub struct VintageUiState {
 
 impl VintageUiState {
     pub fn new(initial_volume: f32) -> Self {
+        Self::with_dsp(initial_volume, &crate::dsp::AudioDspSettings::default())
+    }
+
+    pub fn with_dsp(initial_volume: f32, dsp: &crate::dsp::AudioDspSettings) -> Self {
         Self {
             search_input: String::with_capacity(32),
             active_band: GenreBand::All,
@@ -54,6 +64,12 @@ impl VintageUiState {
             active_index: 0,
             is_power_on: true,
             volume: initial_volume,
+            eq_enabled: dsp.eq_enabled,
+            eq_bands: dsp.eq_bands,
+            balance: dsp.balance,
+            eq_expanded: dsp.eq_expanded,
+            eq_window_toggle_requested: None,
+            dragging_band_idx: None,
             status_feedback: None,
             title_anim_offset: 0,
             title_anim_direction: 1,
@@ -399,7 +415,19 @@ pub fn render_vintage_stereo(
         }
     }
 
-    // 4. Draw Volume Slider
+    // 4. Draw EQ Expand/Collapse Toggle Button
+    let eq_btn_label = if ui.eq_expanded {
+        "#139#EQ"
+    } else {
+        "#139#EQ"
+    };
+    if d.gui_button(layout.eq_btn_rect, eq_btn_label) {
+        ui.eq_expanded = !ui.eq_expanded;
+        settings.set_eq_expanded(ui.eq_expanded);
+        ui.eq_window_toggle_requested = Some(ui.eq_expanded);
+    }
+
+    // 5. Draw Volume Slider
     d.draw_text(
         &format!("VOL: {}%", (ui.volume * 100.0).round() as i32),
         layout.vol_label_rect.x as i32,
@@ -611,6 +639,197 @@ pub fn render_vintage_stereo(
                     );
                 }
             }
+        }
+    }
+
+    // 11. Expanded 10-Band Graphic Equalizer & Balance Control Panel
+    if layout.eq_expanded && layout.eq_panel_rect.height > 20.0 {
+        // Draw lower component chassis & bezel
+        d.draw_rectangle_rounded(layout.eq_panel_rect, 0.04, 16, COLOR_CHASSIS_BG);
+        d.draw_rectangle_rounded_lines(layout.eq_panel_rect, 0.04, 16, COLOR_BEZEL_OUTLINE);
+
+        // EQ Power ON/OFF Toggle Button
+        let eq_pwr_label = if ui.eq_enabled {
+            "#131#EQ ON"
+        } else {
+            "#133#EQ OFF"
+        };
+        if d.gui_button(layout.eq_power_btn_rect, eq_pwr_label) {
+            ui.eq_enabled = !ui.eq_enabled;
+            audio.set_eq_enabled(ui.eq_enabled);
+            settings.set_eq_enabled(ui.eq_enabled);
+        }
+
+        // Flat Reset Button
+        if d.gui_button(layout.eq_reset_btn_rect, "#113#FLAT") {
+            ui.eq_bands = [0.0; crate::dsp::NUM_EQ_BANDS];
+            audio.set_eq_bands(ui.eq_bands);
+            settings.set_eq_bands(ui.eq_bands);
+            ui.status_feedback = Some(("Equalizer set to Flat (0 dB)".to_string(), 2.0));
+        }
+
+        // Balance Slider & Reset
+        let bal_text = if ui.balance.abs() < 0.01 {
+            "BAL: CTR".to_string()
+        } else if ui.balance < 0.0 {
+            format!("BAL: L {:.0}%", ui.balance.abs() * 100.0)
+        } else {
+            format!("BAL: R {:.0}%", ui.balance * 100.0)
+        };
+        if layout.balance_label_rect.width > 0.0 {
+            d.draw_text(
+                &bal_text,
+                layout.balance_label_rect.x as i32,
+                (layout.balance_label_rect.y + 4.0) as i32,
+                layout.font_ui_small,
+                if ui.balance.abs() < 0.01 {
+                    COLOR_VFD_CYAN_DIM
+                } else {
+                    COLOR_VFD_AMBER
+                },
+            );
+        }
+
+        let prev_bal = ui.balance;
+        d.gui_slider(layout.balance_slider_rect, "L", "R", &mut ui.balance, -1.0, 1.0);
+        if ui.balance.abs() < 0.04 {
+            ui.balance = 0.0;
+        }
+        if (ui.balance - prev_bal).abs() > 0.005 {
+            audio.set_balance(ui.balance);
+            settings.set_balance(ui.balance);
+        }
+
+        if d.gui_button(layout.balance_center_btn_rect, "CTR") {
+            ui.balance = 0.0;
+            audio.set_balance(0.0);
+            settings.set_balance(0.0);
+        }
+
+        // 10-Band Graphic Equalizer Faders
+        let is_left_down = d.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT);
+        if !is_left_down {
+            ui.dragging_band_idx = None;
+        }
+
+        for i in 0..10 {
+            // Value text above fader
+            let val_str = format!("{:+.0}", ui.eq_bands[i]);
+            let val_w = d.measure_text(&val_str, layout.font_ui_small);
+            let val_x = (layout.eq_band_val_rects[i].x
+                + (layout.eq_band_val_rects[i].width - val_w as f32) / 2.0)
+                as i32;
+            d.draw_text(
+                &val_str,
+                val_x,
+                layout.eq_band_val_rects[i].y as i32,
+                layout.font_ui_small,
+                if !ui.eq_enabled {
+                    COLOR_DIAL_TICK
+                } else if ui.eq_bands[i].abs() < 0.01 {
+                    COLOR_VFD_CYAN_DIM
+                } else {
+                    COLOR_VFD_AMBER
+                },
+            );
+
+            // Frequency label below fader
+            let freq_lbl = crate::dsp::EQ_BAND_LABELS[i];
+            let freq_w = d.measure_text(freq_lbl, layout.font_ui_small);
+            let freq_x = (layout.eq_band_label_rects[i].x
+                + (layout.eq_band_label_rects[i].width - freq_w as f32) / 2.0)
+                as i32;
+            d.draw_text(
+                freq_lbl,
+                freq_x,
+                (layout.eq_band_label_rects[i].y + 2.0) as i32,
+                layout.font_ui_small,
+                COLOR_DIAL_TICK_TEXT,
+            );
+
+            // Fader track
+            let track_rect = layout.eq_band_rects[i];
+            let slot_w = 4.0;
+            let slot_x = track_rect.x + (track_rect.width - slot_w) / 2.0;
+            d.draw_rectangle_rounded(
+                Rectangle::new(slot_x, track_rect.y, slot_w, track_rect.height),
+                0.5,
+                4,
+                COLOR_DIAL_TRACK_BG,
+            );
+            d.draw_rectangle_rounded_lines(
+                Rectangle::new(slot_x, track_rect.y, slot_w, track_rect.height),
+                0.5,
+                4,
+                COLOR_BEZEL_OUTLINE,
+            );
+
+            // 0 dB center tick mark
+            let center_y = track_rect.y + (track_rect.height / 2.0);
+            d.draw_line_ex(
+                Vector2::new(track_rect.x + 2.0, center_y),
+                Vector2::new(track_rect.x + track_rect.width - 2.0, center_y),
+                1.0,
+                COLOR_DIAL_TICK,
+            );
+
+            // Handle fader mouse drag & click
+            let hovered = track_rect.check_collision_point_rec(mouse_pos);
+            if (hovered && is_left_down && ui.dragging_band_idx.is_none())
+                || ui.dragging_band_idx == Some(i)
+            {
+                ui.dragging_band_idx = Some(i);
+                let norm = (1.0 - (mouse_pos.y - track_rect.y) / track_rect.height).clamp(0.0, 1.0);
+                let mut new_gain = crate::dsp::EQ_MIN_GAIN_DB
+                    + (norm * (crate::dsp::EQ_MAX_GAIN_DB - crate::dsp::EQ_MIN_GAIN_DB));
+                if new_gain.abs() < 0.4 {
+                    new_gain = 0.0;
+                }
+                let clamped = (new_gain * 2.0).round() / 2.0;
+                if (ui.eq_bands[i] - clamped).abs() > 0.01 {
+                    ui.eq_bands[i] = clamped;
+                    audio.set_eq_band(i, clamped);
+                    settings.set_eq_band(i, clamped);
+                }
+            }
+
+            if hovered && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT) {
+                ui.eq_bands[i] = 0.0;
+                audio.set_eq_band(i, 0.0);
+                settings.set_eq_band(i, 0.0);
+            }
+
+            // Draw fader knob handle
+            let norm_p = ((ui.eq_bands[i] - crate::dsp::EQ_MIN_GAIN_DB)
+                / (crate::dsp::EQ_MAX_GAIN_DB - crate::dsp::EQ_MIN_GAIN_DB))
+                .clamp(0.0, 1.0);
+            let knob_h = (track_rect.height * 0.22).clamp(10.0, 16.0);
+            let knob_w = (track_rect.width * 0.75).clamp(14.0, 24.0);
+            let knob_y = track_rect.y + ((1.0 - norm_p) * (track_rect.height - knob_h));
+            let knob_x = track_rect.x + (track_rect.width - knob_w) / 2.0;
+            let knob_rect = Rectangle::new(knob_x, knob_y, knob_w, knob_h);
+
+            d.draw_rectangle_rounded(knob_rect, 0.3, 4, Color::new(50, 50, 62, 255));
+            d.draw_rectangle_rounded_lines(
+                knob_rect,
+                0.3,
+                4,
+                if ui.eq_enabled && ui.eq_bands[i].abs() > 0.01 {
+                    COLOR_VFD_AMBER
+                } else {
+                    Color::new(80, 80, 100, 255)
+                },
+            );
+            d.draw_line_ex(
+                Vector2::new(knob_x + 2.0, knob_y + knob_h / 2.0),
+                Vector2::new(knob_x + knob_w - 2.0, knob_y + knob_h / 2.0),
+                1.5,
+                if ui.eq_enabled {
+                    COLOR_VFD_CYAN_GLOW
+                } else {
+                    COLOR_DIAL_TICK
+                },
+            );
         }
     }
 }

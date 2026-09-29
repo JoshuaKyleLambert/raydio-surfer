@@ -303,21 +303,28 @@ pub struct AudioController {
     sender: Sender<AudioCommand>,
     status: Arc<Mutex<PlayerStatus>>,
     volume: Arc<Mutex<f32>>,
+    dsp_settings: Arc<Mutex<crate::dsp::AudioDspSettings>>,
 }
 
 impl AudioController {
     pub fn new() -> Self {
+        Self::with_dsp_settings(crate::dsp::AudioDspSettings::default())
+    }
+
+    pub fn with_dsp_settings(initial_dsp: crate::dsp::AudioDspSettings) -> Self {
         let (sender, receiver) = channel();
         let status = Arc::new(Mutex::new(PlayerStatus::Stopped));
         let volume = Arc::new(Mutex::new(0.5f32));
+        let dsp_settings = Arc::new(Mutex::new(initial_dsp));
 
         let status_clone = Arc::clone(&status);
         let volume_clone = Arc::clone(&volume);
+        let dsp_clone = Arc::clone(&dsp_settings);
 
         thread::Builder::new()
             .name("audio-player".to_string())
             .spawn(move || {
-                run_audio_worker(receiver, status_clone, volume_clone);
+                run_audio_worker(receiver, status_clone, volume_clone, dsp_clone);
             })
             .expect("Failed to spawn audio worker thread");
 
@@ -325,6 +332,38 @@ impl AudioController {
             sender,
             status,
             volume,
+            dsp_settings,
+        }
+    }
+
+    pub fn dsp_settings(&self) -> Arc<Mutex<crate::dsp::AudioDspSettings>> {
+        Arc::clone(&self.dsp_settings)
+    }
+
+    pub fn set_eq_enabled(&self, enabled: bool) {
+        if let Ok(mut dsp) = self.dsp_settings.lock() {
+            dsp.eq_enabled = enabled;
+        }
+    }
+
+    pub fn set_eq_bands(&self, bands: [f32; crate::dsp::NUM_EQ_BANDS]) {
+        if let Ok(mut dsp) = self.dsp_settings.lock() {
+            dsp.eq_bands = bands;
+        }
+    }
+
+    pub fn set_eq_band(&self, idx: usize, gain_db: f32) {
+        if idx < crate::dsp::NUM_EQ_BANDS {
+            if let Ok(mut dsp) = self.dsp_settings.lock() {
+                dsp.eq_bands[idx] =
+                    gain_db.clamp(crate::dsp::EQ_MIN_GAIN_DB, crate::dsp::EQ_MAX_GAIN_DB);
+            }
+        }
+    }
+
+    pub fn set_balance(&self, balance: f32) {
+        if let Ok(mut dsp) = self.dsp_settings.lock() {
+            dsp.balance = balance.clamp(crate::dsp::BALANCE_MIN, crate::dsp::BALANCE_MAX);
         }
     }
 
@@ -532,6 +571,7 @@ fn run_audio_worker(
     receiver: Receiver<AudioCommand>,
     status: Arc<Mutex<PlayerStatus>>,
     volume: Arc<Mutex<f32>>,
+    dsp_settings: Arc<Mutex<crate::dsp::AudioDspSettings>>,
 ) {
     let device_sink: MixerDeviceSink = match DeviceSinkBuilder::open_default_sink() {
         Ok(sink) => sink,
@@ -612,7 +652,8 @@ fn run_audio_worker(
                         let player = Player::connect_new(device_sink.mixer());
                         let current_vol = volume.lock().map(|v| *v).unwrap_or(0.5);
                         player.set_volume(current_vol);
-                        player.append(source);
+                        let dsp_source = crate::dsp::AudioDspSource::new(source, Arc::clone(&dsp_settings));
+                        player.append(dsp_source);
 
                         current_player = Some(player);
                         current_stop_signal = Some(stop_signal);
