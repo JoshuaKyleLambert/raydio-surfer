@@ -69,8 +69,9 @@ fn main() {
     // Set the application icon (taskbar, Alt-Tab, window decoration).
     // The PNG is baked into the binary so it works regardless of the working
     // directory the app is launched from.
-    let icon = Image::load_image_from_mem(".png", include_bytes!("../assets/icon.png"));
-    rl.set_window_icon(&icon);
+    if let Ok(icon) = Image::load_image_from_mem(".png", include_bytes!("../assets/icon.png")) {
+        rl.set_window_icon(&icon);
+    }
 
     // Apply bilinear texture filtering to font atlas for smooth high-DPI scaling
     unsafe {
