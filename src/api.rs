@@ -1,12 +1,13 @@
 use crate::bands::GenreBand;
 use crate::paths::{self, CACHE_FILENAME};
+use crate::storage;
 use radiobrowser::{ApiStation, StationOrder, blocking::RadioBrowserAPI};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
-use std::time::{Duration, SystemTime};
-use std::{fs, path::Path};
+use std::time::Duration;
 
 const CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24); // 24 hours
 const MAX_STATIONS_LIMIT: &str = "5000";
@@ -93,38 +94,28 @@ pub fn is_supported_station(s: &ApiStation) -> bool {
 
 // Load cached stations from disk
 pub fn load_stations_from_cache() -> Option<Vec<CachedStation>> {
-    let path = paths::cache_path();
-    let file_path = if path.exists() {
-        path
+    let cache_path = paths::cache_path();
+    let local_path = Path::new(CACHE_FILENAME);
+
+    let file_path = if cache_path.exists() {
+        cache_path
+    } else if local_path.exists() {
+        local_path.to_path_buf()
     } else {
-        let local_path = Path::new(CACHE_FILENAME);
-        if local_path.exists() {
-            local_path.to_path_buf()
-        } else {
-            return None;
-        }
+        return None;
     };
 
-    // Check file age
-    if let Ok(metadata) = fs::metadata(&file_path)
-        && let Ok(modified) = metadata.modified()
-        && let Ok(age) = SystemTime::now().duration_since(modified)
-        && age > CACHE_MAX_AGE
-    {
-        return None; // Expired
+    if !storage::is_cache_valid(&file_path, CACHE_MAX_AGE) {
+        return None;
     }
 
-    let data = fs::read_to_string(&file_path).ok()?;
-    serde_json::from_str(&data).ok()
+    storage::load_json(&file_path)
 }
 
 // Map ApiStation instances to CachedStation and save them
 pub fn save_stations_to_cache(stations: &[CachedStation]) {
-    if let Ok(json_data) = serde_json::to_string(stations) {
-        let path = paths::cache_path();
-        paths::ensure_parent_dir_exists(&path);
-        let _ = fs::write(path, json_data);
-    }
+    let path = paths::cache_path();
+    let _ = storage::save_json(&path, stations);
 }
 
 pub fn map_api_stations(stations: Vec<ApiStation>) -> Vec<CachedStation> {

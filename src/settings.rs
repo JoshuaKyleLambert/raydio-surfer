@@ -2,8 +2,8 @@ use crate::api::CachedStation;
 use crate::bands::{BandSlot, Bands};
 use crate::paths::{self, SETTINGS_FILENAME};
 use crate::presets::Presets;
+use crate::storage;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::Path;
 
 pub const DEFAULT_VOLUME: f32 = 0.75;
@@ -37,47 +37,49 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load() -> Self {
-        let path = paths::settings_path();
-        let mut settings = if path.exists()
-            && let Ok(content) = fs::read_to_string(&path)
-            && let Ok(loaded) = serde_json::from_str::<Settings>(&content)
-        {
-            loaded
-        } else if let Ok(content) = fs::read_to_string(SETTINGS_FILENAME)
-            && let Ok(loaded) = serde_json::from_str::<Settings>(&content)
-        {
-            loaded
-        } else {
-            Self::default()
-        };
+        let config_path = paths::settings_path();
+        let local_path = Path::new(SETTINGS_FILENAME);
 
-        // Migration: If legacy presets.json or bands.json exist on disk, migrate them into settings
-        let presets_local = Path::new("presets.json");
-        let presets_config = paths::config_dir().map(|d| d.join("presets.json"));
-        let presets_content = presets_config
-            .as_deref()
-            .and_then(|p| fs::read_to_string(p).ok())
-            .or_else(|| fs::read_to_string(presets_local).ok());
+        let mut settings = storage::load_json_with_fallback::<Settings>(
+            &config_path,
+            if local_path != config_path {
+                Some(local_path)
+            } else {
+                None
+            },
+        )
+        .unwrap_or_default();
 
-        if let Some(content) = presets_content
-            && settings.presets.slots.iter().all(|s| s.is_none())
-            && let Ok(loaded_presets) = serde_json::from_str::<Presets>(&content)
-        {
-            settings.presets = loaded_presets;
+        // Migration: If legacy presets.json exists on disk, migrate into settings if presets are empty
+        if settings.presets.slots.iter().all(|s| s.is_none()) {
+            let presets_local = Path::new("presets.json");
+            let presets_config = paths::config_dir().map(|d| d.join("presets.json"));
+            if let Some(legacy_presets) = storage::load_json_with_fallback::<Presets>(
+                presets_config.as_deref().unwrap_or(presets_local),
+                if presets_config.is_some() {
+                    Some(presets_local)
+                } else {
+                    None
+                },
+            ) {
+                settings.presets = legacy_presets;
+            }
         }
 
-        let bands_local = Path::new("bands.json");
-        let bands_config = paths::config_dir().map(|d| d.join("bands.json"));
-        let bands_content = bands_config
-            .as_deref()
-            .and_then(|p| fs::read_to_string(p).ok())
-            .or_else(|| fs::read_to_string(bands_local).ok());
-
-        if let Some(content) = bands_content
-            && settings.bands == Bands::default()
-            && let Ok(loaded_bands) = serde_json::from_str::<Bands>(&content)
-        {
-            settings.bands = loaded_bands;
+        // Migration: If legacy bands.json exists on disk, migrate into settings if bands are default
+        if settings.bands == Bands::default() {
+            let bands_local = Path::new("bands.json");
+            let bands_config = paths::config_dir().map(|d| d.join("bands.json"));
+            if let Some(legacy_bands) = storage::load_json_with_fallback::<Bands>(
+                bands_config.as_deref().unwrap_or(bands_local),
+                if bands_config.is_some() {
+                    Some(bands_local)
+                } else {
+                    None
+                },
+            ) {
+                settings.bands = legacy_bands;
+            }
         }
 
         settings.save();
@@ -85,11 +87,8 @@ impl Settings {
     }
 
     pub fn save(&self) {
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let path = paths::settings_path();
-            paths::ensure_parent_dir_exists(&path);
-            let _ = fs::write(path, json);
-        }
+        let path = paths::settings_path();
+        let _ = storage::save_json_pretty(&path, self);
     }
 
     pub fn set_volume(&mut self, volume: f32) {
@@ -215,5 +214,85 @@ mod tests {
         assert_eq!(loaded.current_station, None);
         assert_eq!(loaded.bands.slots.len(), 9);
         assert_eq!(loaded.presets.slots.len(), 6);
+    }
+
+    #[test]
+    fn test_favorites_presets_retention_and_persistence() {
+        let temp_dir = std::env::temp_dir().join("raydio_surfer_presets_test");
+        let settings_file = temp_dir.join("settings.json");
+
+        let mut settings = Settings::default();
+        let fav1 = CachedStation {
+            stationuuid: "fav-1".into(),
+            name: "Favorite One".into(),
+            url: "http://fav1.fm".into(),
+            tags: "rock".into(),
+            ..Default::default()
+        };
+        let fav2 = CachedStation {
+            stationuuid: "fav-2".into(),
+            name: "Favorite Two".into(),
+            url: "http://fav2.fm".into(),
+            tags: "jazz".into(),
+            ..Default::default()
+        };
+
+        settings.set_preset(0, fav1.clone());
+        settings.set_preset(5, fav2.clone());
+
+        // Save to test path
+        let save_res = storage::save_json_pretty(&settings_file, &settings);
+        assert!(save_res.is_ok());
+
+        // Load back from test path
+        let reloaded: Settings = storage::load_json(&settings_file).expect("Must load settings");
+        assert_eq!(reloaded.get_preset(0), Some(&fav1));
+        assert_eq!(reloaded.get_preset(1), None);
+        assert_eq!(reloaded.get_preset(5), Some(&fav2));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_station_cache_and_settings_separation() {
+        let temp_dir = std::env::temp_dir().join("raydio_surfer_separation_test");
+        let settings_file = temp_dir.join("config").join("settings.json");
+        let cache_file = temp_dir.join("cache").join("stations_cache.json");
+
+        let mut settings = Settings::default();
+        settings.volume = 0.9;
+        settings.set_preset(0, CachedStation {
+            name: "Preset Station".into(),
+            url: "http://preset.com".into(),
+            ..Default::default()
+        });
+
+        let cache_data = vec![
+            CachedStation {
+                name: "Cached Catalog Station 1".into(),
+                url: "http://catalog1.com".into(),
+                ..Default::default()
+            },
+            CachedStation {
+                name: "Cached Catalog Station 2".into(),
+                url: "http://catalog2.com".into(),
+                ..Default::default()
+            },
+        ];
+
+        // Save settings and cache separately
+        storage::save_json_pretty(&settings_file, &settings).unwrap();
+        storage::save_json(&cache_file, &cache_data).unwrap();
+
+        // Verify independent loading
+        let loaded_settings: Settings = storage::load_json(&settings_file).unwrap();
+        let loaded_cache: Vec<CachedStation> = storage::load_json(&cache_file).unwrap();
+
+        assert_eq!(loaded_settings.volume, 0.9);
+        assert_eq!(loaded_settings.get_preset(0).unwrap().name, "Preset Station");
+        assert_eq!(loaded_cache.len(), 2);
+        assert_eq!(loaded_cache[0].name, "Cached Catalog Station 1");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

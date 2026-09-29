@@ -17,6 +17,7 @@ mod layout;
 mod paths;
 mod presets;
 mod settings;
+mod storage;
 
 // Background color for the window
 const BACKGROUND_COLOR: Color = Color::new(16, 16, 22, 255);

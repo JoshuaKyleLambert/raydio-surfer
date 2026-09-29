@@ -1,6 +1,5 @@
 use directories::ProjectDirs;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{ PathBuf};
 
 pub const APP_QUALIFIER: &str = "com";
 pub const APP_ORGANIZATION: &str = "RaydioSurfer";
@@ -44,19 +43,17 @@ pub fn cache_path() -> PathBuf {
     }
 }
 
-/// Helper to ensure the parent directory of a file path exists before writing.
-pub fn ensure_parent_dir_exists(file_path: &Path) {
-    if let Some(parent) = file_path.parent()
-        && !parent.exists()
-    {
-        let _ = fs::create_dir_all(parent);
-    }
-}
+
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
     use super::*;
-
+    /// Helper to ensure the parent directory of a file path exists before writing.
+    pub fn ensure_parent_dir_exists(file_path: &Path) {
+        crate::storage::ensure_parent_dir_exists(file_path);
+    }
     #[test]
     fn test_paths_not_empty() {
         let settings = settings_path();
