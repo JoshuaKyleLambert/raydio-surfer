@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RaydioSurfer
+GenericName=Internet Radio
+Comment=Vintage car-stereo styled internet radio player
+Exec=RaydioSurfer
+Icon=raydiosurfer
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=radio;internet;stream;music;tuner;
