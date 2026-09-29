@@ -13,6 +13,7 @@ mod api;
 mod audio;
 mod bands;
 mod controls;
+mod icon;
 mod layout;
 mod paths;
 mod presets;
@@ -63,6 +64,9 @@ fn main() {
         .msaa_4x()
         .always_run()
         .build();
+
+    // Give the window a distinctive vintage tuner-dial icon.
+    icon::set_app_icon(&rl);
 
     rl.set_target_fps(60);
 
