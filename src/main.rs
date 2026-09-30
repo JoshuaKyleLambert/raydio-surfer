@@ -244,17 +244,22 @@ fn main() {
             }
         }
 
-        // Handle window size expansion / collapsing when EQ button is toggled
+        // Handle window size expansion / collapsing when EQ button is toggled.
+        // The main player box geometry of the current (pre-toggle) layout is checked first,
+        // then the new window height is solved so that box keeps its exact size.
+        // The horizontal dimension is never altered.
         if let Some(expanded) = ui.eq_window_toggle_requested.take() {
             let current_w = rl.get_screen_width();
             let current_h = rl.get_screen_height();
-            if expanded {
-                if current_h <= 300 {
-                    rl.set_window_size(current_w, 440);
-                }
-            } else if current_h > 350 {
-                rl.set_window_size(current_w, 270);
-            }
+            let num_bands = settings.bands.slots.len();
+            let current_layout =
+                StereoLayout::compute(current_w as f32, current_h as f32, num_bands, !expanded);
+            let target_h = current_layout.toggled_window_height(current_w as f32, num_bands);
+
+            let dpi = rl.get_window_scale_dpi();
+            let (req_w, req_h) =
+                window_size_request(current_w, rl.get_render_width(), target_h, dpi.y);
+            rl.set_window_size(req_w, req_h);
         }
 
         // Begin drawing
@@ -328,6 +333,29 @@ pub fn tune_to_preset(preset_idx: usize, ctx: &mut PresetTuneContext<'_>) {
         *ctx.last_played_channel = Some((st.name.clone(), st.url.clone()));
         ctx.ui.status_feedback = Some((format!("Tuned to Preset [{}]", preset_idx + 1), 3.0));
     }
+}
+
+/// Convert a logical window size request into the units expected by `set_window_size`.
+///
+/// With `FLAG_WINDOW_HIGHDPI`, raylib reports the screen size in logical pixels
+/// (framebuffer / DPI scale), but on Windows and X11 `SetWindowSize` forwards its values
+/// straight to GLFW, which interprets them as physical pixels. Passing the logical width
+/// back would shrink the window by the DPI factor on every toggle, so the current physical
+/// framebuffer width is reused unchanged and only the height is scaled.
+/// On macOS GLFW works in logical points, so no conversion is applied.
+fn window_size_request(
+    screen_w: i32,
+    render_w: i32,
+    logical_h: i32,
+    dpi_scale_y: f32,
+) -> (i32, i32) {
+    if cfg!(target_os = "macos") {
+        return (screen_w, logical_h);
+    }
+    let width = if render_w > 0 { render_w } else { screen_w };
+    let scale = if dpi_scale_y > 0.0 { dpi_scale_y } else { 1.0 };
+    let height = (logical_h as f32 * scale).ceil() as i32;
+    (width, height)
 }
 
 fn _get_tags() -> Option<Vec<ApiTag>> {
@@ -830,5 +858,52 @@ mod tests {
         assert!(layout.eq_expanded);
         assert!(layout.eq_panel_rect.height > 80.0);
         assert_eq!(layout.eq_band_rects.len(), 10);
+    }
+
+    #[test]
+    fn test_eq_toggle_preserves_main_player_box() {
+        let width = 920.0;
+        let bands = 9;
+
+        // Expand from a collapsed window: main player box must keep its exact geometry
+        let collapsed = StereoLayout::compute(width, 270.0, bands, false);
+        let expanded_h = collapsed.toggled_window_height(width, bands);
+        let expanded = StereoLayout::compute(width, expanded_h as f32, bands, true);
+        assert!(expanded_h > 270);
+        assert!((expanded.bezel_rect.height - collapsed.bezel_rect.height).abs() < 1.0);
+        assert_eq!(expanded.bezel_rect.width, collapsed.bezel_rect.width);
+        assert_eq!(expanded.bezel_rect.x, collapsed.bezel_rect.x);
+
+        // Collapse back: returns to the original height
+        let collapsed_h = expanded.toggled_window_height(width, bands);
+        assert!((collapsed_h - 270).abs() <= 1, "got {}", collapsed_h);
+
+        // Collapse from a user-resized expanded window
+        let resized = StereoLayout::compute(width, 600.0, bands, true);
+        let h = resized.toggled_window_height(width, bands);
+        let after = StereoLayout::compute(width, h as f32, bands, false);
+        assert!((after.bezel_rect.height - resized.bezel_rect.height).abs() < 1.0);
+
+        // Portrait (height-dependent margins) round trip
+        let portrait = StereoLayout::compute(390.0, 844.0, bands, false);
+        let ph = portrait.toggled_window_height(390.0, bands);
+        let portrait_exp = StereoLayout::compute(390.0, ph as f32, bands, true);
+        assert!((portrait_exp.bezel_rect.height - portrait.bezel_rect.height).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_window_size_request_never_alters_width() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(window_size_request(920, 1840, 440, 2.0), (920, 440));
+            return;
+        }
+        // No DPI scaling
+        assert_eq!(window_size_request(920, 920, 440, 1.0), (920, 440));
+        // 150% scaling: logical 920 == physical 1380, width stays physical 1380
+        assert_eq!(window_size_request(920, 1380, 270, 1.5), (1380, 405));
+        // 125% scaling: height rounds up so logical height is not truncated
+        let (w, h) = window_size_request(917, 1146, 271, 1.25);
+        assert_eq!(w, 1146);
+        assert!((h as f32 / 1.25) as i32 >= 271);
     }
 }

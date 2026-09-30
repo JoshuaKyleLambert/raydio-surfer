@@ -66,6 +66,36 @@ pub struct StereoLayout {
 }
 
 impl StereoLayout {
+    /// Find the window height (logical pixels) at which the main player box (bezel)
+    /// has exactly `bezel_height` for the given width and EQ expansion state.
+    /// The bezel height grows monotonically with window height, so a bisection over
+    /// `compute` yields an exact inverse for both landscape and portrait layouts.
+    pub fn window_height_for_bezel(
+        width: f32,
+        bezel_height: f32,
+        num_bands: usize,
+        eq_expanded: bool,
+    ) -> i32 {
+        let mut lo = 200.0_f32;
+        let mut hi = 10_000.0_f32;
+        for _ in 0..60 {
+            let mid = (lo + hi) * 0.5;
+            let h = Self::compute(width, mid, num_bands, eq_expanded).bezel_rect.height;
+            if h < bezel_height {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        hi.round() as i32
+    }
+
+    /// Target window height after toggling the EQ/DSP panel: the main player box keeps
+    /// its current geometry and only the vertical dimension changes.
+    pub fn toggled_window_height(&self, width: f32, num_bands: usize) -> i32 {
+        Self::window_height_for_bezel(width, self.bezel_rect.height, num_bands, !self.eq_expanded)
+    }
+
     /// Compute a complete responsive layout from viewport dimensions, number of bands, and EQ expansion state.
     pub fn compute(width: f32, height: f32, num_bands: usize, eq_expanded: bool) -> Self {
         let width = width.max(300.0);
@@ -115,11 +145,13 @@ impl StereoLayout {
         let inner_y = bezel_rect.y + pad_y;
         let inner_h = (bezel_rect.height - (pad_y * 2.0)).max(80.0);
 
-        // Scaled typography
-        let font_display_large = ((height * 0.055).round() as i32).clamp(15, 26);
-        let font_display_small = ((height * 0.038).round() as i32).clamp(10, 16);
-        let font_ui_regular = ((height * 0.040).round() as i32).clamp(11, 18);
-        let font_ui_small = ((height * 0.034).round() as i32).clamp(9, 14);
+        // Scaled typography, derived from the main player box (not the full window) so text
+        // keeps its size when the EQ panel is expanded or collapsed.
+        let type_h = tuner_h + (margin_y * 2.0);
+        let font_display_large = ((type_h * 0.055).round() as i32).clamp(15, 26);
+        let font_display_small = ((type_h * 0.038).round() as i32).clamp(10, 16);
+        let font_ui_regular = ((type_h * 0.040).round() as i32).clamp(11, 18);
+        let font_ui_small = ((type_h * 0.034).round() as i32).clamp(9, 14);
 
         let row_gap = (inner_h * 0.038).clamp(4.0, 10.0);
         let total_gaps = 4.0 * row_gap;
@@ -366,11 +398,15 @@ impl StereoLayout {
         let inner_x = bezel_rect.x + pad_x;
         let inner_w = bezel_rect.width - (pad_x * 2.0);
 
-        // Scaled typography
-        let font_display_large = ((height * 0.028).round() as i32).clamp(13, 24);
-        let font_display_small = ((height * 0.018).round() as i32).clamp(9, 15);
-        let font_ui_regular = ((height * 0.022).round() as i32).clamp(11, 18);
-        let font_ui_small = ((height * 0.018).round() as i32).clamp(9, 14);
+        // Scaled typography, derived from the main player box (not the full window) so text
+        // keeps its size when the EQ panel is expanded or collapsed.
+        // Invert the height-dependent margin (max(1.5% of height, 6px)) to recover the
+        // collapsed window height that yields this main player box height.
+        let type_h = (tuner_h + 12.0).max(tuner_h / 0.97);
+        let font_display_large = ((type_h * 0.028).round() as i32).clamp(13, 24);
+        let font_display_small = ((type_h * 0.018).round() as i32).clamp(9, 15);
+        let font_ui_regular = ((type_h * 0.022).round() as i32).clamp(11, 18);
+        let font_ui_small = ((type_h * 0.018).round() as i32).clamp(9, 14);
 
         // Top bar: Power button, EQ toggle button, Volume slider
         let top_y = bezel_rect.y + (bezel_rect.height * 0.015);
@@ -694,6 +730,19 @@ mod tests {
             layout.band_btn_rects[0].height
         );
         assert!(layout.preset_rects[5].y > layout.preset_rects[0].y);
+    }
+
+    #[test]
+    fn test_fonts_unchanged_when_eq_toggled() {
+        for &(w, h) in &[(920.0_f32, 270.0_f32), (1280.0, 500.0), (390.0, 844.0)] {
+            let collapsed = StereoLayout::compute(w, h, 9, false);
+            let exp_h = collapsed.toggled_window_height(w, 9);
+            let expanded = StereoLayout::compute(w, exp_h as f32, 9, true);
+            assert_eq!(expanded.font_display_large, collapsed.font_display_large);
+            assert_eq!(expanded.font_display_small, collapsed.font_display_small);
+            assert_eq!(expanded.font_ui_regular, collapsed.font_ui_regular);
+            assert_eq!(expanded.font_ui_small, collapsed.font_ui_small);
+        }
     }
 
     #[test]
