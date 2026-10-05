@@ -6,6 +6,7 @@ use crate::bands::GenreBand;
 use crate::controls::vintage_ui::{VintageUiState, render_vintage_stereo};
 use crate::layout::StereoLayout;
 use crate::settings::Settings;
+use crate::window_frame::{ResizeDrag, ResizeEdges};
 use radiobrowser::{ApiStation, ApiTag, blocking::RadioBrowserAPI};
 use raylib::prelude::*;
 
@@ -19,6 +20,7 @@ mod paths;
 mod presets;
 mod settings;
 mod storage;
+mod window_frame;
 
 // Background color for the window
 const BACKGROUND_COLOR: Color = Color::new(16, 16, 22, 255);
@@ -88,9 +90,14 @@ fn main() {
 
     // Window-local mouse position grabbed when a background drag started
     let mut drag_anchor: Option<Vector2> = None;
+    // Edge resize in progress, and the mouse cursor shape currently applied
+    let mut resize_drag: Option<ResizeDrag> = None;
+    let mut mouse_cursor = MouseCursor::MOUSE_CURSOR_DEFAULT;
+    // Set on the frame a window move/resize ends, to keep raygui locked for one more frame
+    let mut window_drag_released = false;
 
     // Main responsive loop
-    while !rl.window_should_close() {
+    while !rl.window_should_close() && !ui.close_requested {
         let dt = rl.get_frame_time();
 
         // Update loader debounce timer
@@ -267,11 +274,12 @@ fn main() {
         }
 
         // Begin drawing
-        ui.window_dragging = drag_anchor.is_some();
+        ui.window_dragging = drag_anchor.is_some() || resize_drag.is_some() || window_drag_released;
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(BACKGROUND_COLOR);
-        // Block raygui input while the window is moving so the cursor passing over
-        // a slider during a fast drag cannot change its value.
+        // Block raygui input while the window is moving or resizing, so the cursor passing
+        // over a slider during a fast drag cannot change its value, and for one frame after,
+        // so releasing the drag over a button does not click it.
         if ui.window_dragging {
             d.gui_lock();
         } else {
@@ -298,23 +306,88 @@ fn main() {
         render_vintage_stereo(&mut d, &layout, &mut ui, &mut settings, &audio, ctx);
         drop(d);
 
-        // Drag the undecorated window by its background. Decided after drawing, so
-        // `pointer_over_control` reflects the controls drawn this frame.
+        // Undecorated window chrome: resize by the edges, move by the background.
+        // raylib polls input inside EndDrawing, so a new press is first visible here, right
+        // after drawing; raygui only sees it while drawing the next frame, which is locked
+        // once a resize or move has started. Edges take priority over the background, and
+        // presses on a control drawn this frame start neither.
         let mouse = rl.get_mouse_position();
-        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) && !ui.pointer_over_control {
-            drag_anchor = Some(mouse);
+        let hover_edges = if drag_anchor.is_none() && resize_drag.is_none() && rl.is_cursor_on_screen() {
+            ResizeEdges::at(
+                mouse,
+                rl.get_screen_width() as f32,
+                rl.get_screen_height() as f32,
+            )
+        } else {
+            ResizeEdges::default()
+        };
+        let unit_scale = window_frame::window_unit_scale(rl.get_window_scale_dpi());
+        let window_size = |rl: &RaylibHandle| {
+            window_frame::window_units_size(
+                (rl.get_screen_width(), rl.get_screen_height()),
+                (rl.get_render_width(), rl.get_render_height()),
+            )
+        };
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+            && drag_anchor.is_none()
+            && resize_drag.is_none()
+        {
+            if hover_edges.any() {
+                let pos = rl.get_window_position();
+                resize_drag = Some(ResizeDrag {
+                    edges: hover_edges,
+                    start_cursor: window_frame::cursor_in_window_units(pos, mouse, unit_scale),
+                    start_pos: pos,
+                    start_size: window_size(&rl),
+                });
+            } else if !ui.is_over_control(mouse) {
+                drag_anchor = Some(mouse);
+            }
         }
+        window_drag_released = false;
         if !rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
+            window_drag_released = drag_anchor.is_some() || resize_drag.is_some();
             drag_anchor = None;
+            resize_drag = None;
         }
-        if let Some(anchor) = drag_anchor {
-            let (x, y) = window_drag_position(
+        if let Some(drag) = resize_drag {
+            let pos = rl.get_window_position();
+            let size = window_size(&rl);
+            let cursor = window_frame::cursor_in_window_units(pos, mouse, unit_scale);
+            let min_size = Vector2::new(
+                window_frame::MIN_WINDOW_WIDTH * unit_scale.x,
+                window_frame::MIN_WINDOW_HEIGHT * unit_scale.y,
+            );
+            let (x, y, w, h) = drag.rect_for_cursor(cursor, min_size);
+            if (w, h) != (size.x.round() as i32, size.y.round() as i32) {
+                rl.set_window_size(w, h);
+            }
+            if (x, y) != (pos.x.round() as i32, pos.y.round() as i32) {
+                rl.set_window_position(x, y);
+            }
+        } else if let Some(anchor) = drag_anchor {
+            let (x, y) = window_frame::window_drag_position(
                 rl.get_window_position(),
                 mouse,
                 anchor,
                 rl.get_window_scale_dpi(),
             );
             rl.set_window_position(x, y);
+        }
+
+        // Resize cursor while hovering or dragging an edge. Only applied on change, since
+        // raylib creates a new system cursor on every call.
+        let wanted_cursor = resize_drag.map_or(hover_edges, |r| r.edges).cursor();
+        if wanted_cursor as i32 != mouse_cursor as i32 {
+            rl.set_mouse_cursor(wanted_cursor);
+            mouse_cursor = wanted_cursor;
+        }
+
+        // Custom minimize button
+        if std::mem::take(&mut ui.minimize_requested) {
+            drag_anchor = None;
+            resize_drag = None;
+            rl.minimize_window();
         }
     }
 }
@@ -390,30 +463,6 @@ fn window_size_request(
     (width, height)
 }
 
-/// Compute the new window position that keeps the window-local `anchor` point under the cursor.
-///
-/// `mouse` and `anchor` are window-local logical coordinates. With `FLAG_WINDOW_HIGHDPI`
-/// on Windows and X11 the window position is in physical pixels, so the offset is scaled
-/// by the DPI factor. On macOS both are in logical points.
-fn window_drag_position(
-    window_pos: Vector2,
-    mouse: Vector2,
-    anchor: Vector2,
-    dpi_scale: Vector2,
-) -> (i32, i32) {
-    let (sx, sy) = if cfg!(target_os = "macos") {
-        (1.0, 1.0)
-    } else {
-        (
-            if dpi_scale.x > 0.0 { dpi_scale.x } else { 1.0 },
-            if dpi_scale.y > 0.0 { dpi_scale.y } else { 1.0 },
-        )
-    };
-    let x = window_pos.x + (mouse.x - anchor.x) * sx;
-    let y = window_pos.y + (mouse.y - anchor.y) * sy;
-    (x.round() as i32, y.round() as i32)
-}
-
 fn _get_tags() -> Option<Vec<ApiTag>> {
     RadioBrowserAPI::new().ok()?.get_tags().send().ok()
 }
@@ -454,30 +503,6 @@ mod tests {
             .msaa_4x()
             .always_run()
             .vsync();
-    }
-
-    #[test]
-    fn test_window_drag_position_keeps_anchor_under_cursor() {
-        let pos = Vector2::new(100.0, 200.0);
-        let anchor = Vector2::new(50.0, 10.0);
-
-        // Mouse still on the anchor: window does not move
-        assert_eq!(
-            window_drag_position(pos, anchor, anchor, Vector2::new(1.5, 1.5)),
-            (100, 200)
-        );
-
-        let mouse = Vector2::new(60.0, 4.0); // moved +10, -6 logical
-        if cfg!(target_os = "macos") {
-            assert_eq!(window_drag_position(pos, mouse, anchor, Vector2::new(2.0, 2.0)), (110, 194));
-            return;
-        }
-        // No scaling
-        assert_eq!(window_drag_position(pos, mouse, anchor, Vector2::new(1.0, 1.0)), (110, 194));
-        // 150% scaling: logical offset becomes physical
-        assert_eq!(window_drag_position(pos, mouse, anchor, Vector2::new(1.5, 1.5)), (115, 191));
-        // Invalid DPI falls back to 1.0
-        assert_eq!(window_drag_position(pos, mouse, anchor, Vector2::new(0.0, 0.0)), (110, 194));
     }
 
     #[test]

@@ -27,6 +27,10 @@ pub struct StereoLayout {
     pub vol_label_rect: Rectangle,
     pub vol_slider_rect: Rectangle,
 
+    // Window buttons (the window is undecorated, so it draws its own)
+    pub minimize_btn_rect: Rectangle,
+    pub close_btn_rect: Rectangle,
+
     // Search bar row
     pub search_box_rect: Rectangle,
     pub search_clear_rect: Rectangle,
@@ -183,7 +187,19 @@ impl StereoLayout {
 
         let display_rect = Rectangle::new(display_x, row1_y, display_w, row1_h);
 
-        let vol_label_rect = Rectangle::new(vol_x, row1_y, vol_w, row1_h * 0.35);
+        // Minimize / close buttons share the strip above the volume slider with its label
+        let win_btn = (row1_h * 0.35).min(vol_w * 0.18).clamp(12.0, 22.0);
+        let win_btn_gap = 4.0;
+        let close_btn_rect = Rectangle::new(inner_x + inner_w - win_btn, row1_y, win_btn, win_btn);
+        let minimize_btn_rect =
+            Rectangle::new(close_btn_rect.x - win_btn_gap - win_btn, row1_y, win_btn, win_btn);
+
+        let vol_label_rect = Rectangle::new(
+            vol_x,
+            row1_y,
+            (minimize_btn_rect.x - win_btn_gap - vol_x).max(0.0),
+            row1_h * 0.35,
+        );
         let vol_slider_rect = Rectangle::new(
             vol_x,
             row1_y + (row1_h * 0.45),
@@ -346,6 +362,8 @@ impl StereoLayout {
             display_rect,
             vol_label_rect,
             vol_slider_rect,
+            minimize_btn_rect,
+            close_btn_rect,
             search_box_rect,
             search_clear_rect,
             band_btn_rects,
@@ -413,7 +431,13 @@ impl StereoLayout {
         let top_h = (tuner_h * 0.05).clamp(26.0, 38.0);
         let power_w = (inner_w * 0.22).clamp(50.0, 80.0);
         let eq_btn_w = (inner_w * 0.18).clamp(40.0, 65.0);
-        let vol_w = (inner_w - power_w - eq_btn_w - 12.0).max(60.0);
+        // Minimize / close buttons at the right end of the top bar
+        let win_btn_w = (top_h * 0.8).clamp(20.0, 30.0);
+        let win_btn_gap = 4.0;
+        let vol_w = (inner_w - power_w - eq_btn_w - 12.0 - (win_btn_w * 2.0 + win_btn_gap * 2.0)).max(60.0);
+        let close_btn_rect = Rectangle::new(inner_x + inner_w - win_btn_w, top_y, win_btn_w, top_h);
+        let minimize_btn_rect =
+            Rectangle::new(close_btn_rect.x - win_btn_gap - win_btn_w, top_y, win_btn_w, top_h);
 
         let power_btn_rect = Rectangle::new(inner_x, top_y, power_w, top_h);
         let eq_btn_rect = Rectangle::new(inner_x + power_w + 4.0, top_y, eq_btn_w, top_h);
@@ -597,6 +621,8 @@ impl StereoLayout {
             display_rect,
             vol_label_rect,
             vol_slider_rect,
+            minimize_btn_rect,
+            close_btn_rect,
             search_box_rect,
             search_clear_rect,
             band_btn_rects,
@@ -742,6 +768,38 @@ mod tests {
             assert_eq!(expanded.font_display_small, collapsed.font_display_small);
             assert_eq!(expanded.font_ui_regular, collapsed.font_ui_regular);
             assert_eq!(expanded.font_ui_small, collapsed.font_ui_small);
+        }
+    }
+
+    #[test]
+    fn test_window_buttons_fit_without_overlap() {
+        let overlaps = |a: &Rectangle, b: &Rectangle| {
+            a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+        };
+        let inside = |r: &Rectangle, outer: &Rectangle| {
+            r.x >= outer.x
+                && r.y >= outer.y
+                && r.x + r.width <= outer.x + outer.width
+                && r.y + r.height <= outer.y + outer.height
+        };
+        for &(w, h) in &[(920.0_f32, 270.0_f32), (480.0, 240.0), (1280.0, 720.0), (390.0, 844.0)] {
+            let layout = StereoLayout::compute(w, h, 9, false);
+            let (min, close) = (layout.minimize_btn_rect, layout.close_btn_rect);
+            assert!(min.width >= 12.0 && close.width >= 12.0, "{}x{}", w, h);
+            assert!(min.x + min.width <= close.x, "{}x{}", w, h);
+            assert!(inside(&min, &layout.bezel_rect) && inside(&close, &layout.bezel_rect), "{}x{}", w, h);
+            for other in [
+                layout.power_btn_rect,
+                layout.eq_btn_rect,
+                layout.display_rect,
+                layout.vol_label_rect,
+                layout.vol_slider_rect,
+                layout.search_box_rect,
+                layout.search_clear_rect,
+            ] {
+                assert!(!overlaps(&min, &other), "minimize overlaps {:?} at {}x{}", other, w, h);
+                assert!(!overlaps(&close, &other), "close overlaps {:?} at {}x{}", other, w, h);
+            }
         }
     }
 

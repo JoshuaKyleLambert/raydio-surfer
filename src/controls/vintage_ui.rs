@@ -51,8 +51,14 @@ pub struct VintageUiState {
     pub requested_preset: Option<usize>,
     /// Set while drawing when the mouse is over any interactive control this frame.
     pub pointer_over_control: bool,
-    /// True while the undecorated window is being dragged by the background.
+    /// Bounds of every interactive control drawn this frame.
+    pub control_rects: Vec<Rectangle>,
+    /// True while the undecorated window is being moved by its background or resized by its edges.
     pub window_dragging: bool,
+    /// Set when the custom minimize button was clicked; handled by the main loop.
+    pub minimize_requested: bool,
+    /// Set when the custom close button was clicked; ends the main loop.
+    pub close_requested: bool,
 }
 
 impl VintageUiState {
@@ -89,7 +95,10 @@ impl VintageUiState {
             loading_timer: 0.0,
             requested_preset: None,
             pointer_over_control: false,
+            control_rects: Vec::new(),
             window_dragging: false,
+            minimize_requested: false,
+            close_requested: false,
         }
     }
 
@@ -100,7 +109,17 @@ impl VintageUiState {
         if rect.check_collision_point_rec(mouse) {
             self.pointer_over_control = true;
         }
+        self.control_rects.push(rect);
         rect
+    }
+
+    /// Whether `point` lies inside any control recorded by `hit` during the last frame.
+    ///
+    /// raylib polls input at the end of drawing, so a new mouse press is first visible after
+    /// the frame's controls were drawn with the previous mouse position; this re-tests the
+    /// recorded bounds against the up-to-date position.
+    pub fn is_over_control(&self, point: Vector2) -> bool {
+        self.control_rects.iter().any(|r| r.check_collision_point_rec(point))
     }
 }
 
@@ -230,6 +249,7 @@ pub fn render_vintage_stereo(
     let dt = d.get_frame_time();
     let mouse_pos = d.get_mouse_position();
     ui.pointer_over_control = false;
+    ui.control_rects.clear();
     if ui.is_loading {
         ui.loading_timer += dt;
     } else {
@@ -458,6 +478,17 @@ pub fn render_vintage_stereo(
     if (ui.volume - prev_vol).abs() > 0.005 {
         audio.set_volume(ui.volume);
         settings.set_volume(ui.volume);
+    }
+
+    // Window buttons (the window is undecorated, so it has no title bar of its own)
+    if d.gui_button(ui.hit(layout.minimize_btn_rect, mouse_pos), "#120#") {
+        ui.minimize_requested = true;
+    }
+    if d.gui_button(ui.hit(layout.close_btn_rect, mouse_pos), "#113#") {
+        ui.close_requested = true;
+    }
+    if !ui.window_dragging && layout.close_btn_rect.check_collision_point_rec(mouse_pos) {
+        d.draw_rectangle_lines_ex(layout.close_btn_rect, 1.0, COLOR_NEEDLE_RED);
     }
 
     // 5. Search Bar & Clear Button
@@ -875,6 +906,8 @@ mod tests {
         assert_eq!(state.requested_preset, None);
         assert!(!state.pointer_over_control);
         assert!(!state.window_dragging);
+        assert!(!state.minimize_requested);
+        assert!(!state.close_requested);
     }
 
     #[test]
@@ -894,6 +927,19 @@ mod tests {
         // A later miss in the same frame does not clear an earlier hit
         state.hit(rect, Vector2::new(500.0, 500.0));
         assert!(state.pointer_over_control);
+    }
+
+    #[test]
+    fn test_is_over_control_uses_recorded_rects() {
+        let mut state = VintageUiState::new(0.75);
+        assert!(!state.is_over_control(Vector2::new(30.0, 20.0)));
+
+        // Recorded with a mouse position outside, then queried with a newer one inside
+        state.hit(Rectangle::new(10.0, 10.0, 50.0, 20.0), Vector2::new(0.0, 0.0));
+        state.hit(Rectangle::new(100.0, 10.0, 20.0, 20.0), Vector2::new(0.0, 0.0));
+        assert!(state.is_over_control(Vector2::new(30.0, 20.0)));
+        assert!(state.is_over_control(Vector2::new(110.0, 15.0)));
+        assert!(!state.is_over_control(Vector2::new(80.0, 20.0)));
     }
 
     #[test]
