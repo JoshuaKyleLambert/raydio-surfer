@@ -21,6 +21,19 @@ pub struct Settings {
     pub current_station: Option<CachedStation>,
     #[serde(default)]
     pub dsp: AudioDspSettings,
+    #[serde(default)]
+    pub window: Option<WindowGeometry>,
+}
+
+/// Window placement saved between runs. The position is in desktop (window) units as
+/// reported by `get_window_position`; the size is the logical screen size, as passed to
+/// the window builder.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 fn default_volume() -> f32 {
@@ -35,6 +48,7 @@ impl Default for Settings {
             presets: Presets::default(),
             current_station: None,
             dsp: AudioDspSettings::default(),
+            window: None,
         }
     }
 }
@@ -172,6 +186,13 @@ impl Settings {
     pub fn get_current_station(&self) -> Option<&CachedStation> {
         self.current_station.as_ref()
     }
+
+    pub fn set_window_geometry(&mut self, geometry: WindowGeometry) {
+        if self.window != Some(geometry) {
+            self.window = Some(geometry);
+            self.save();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +276,7 @@ mod tests {
         let loaded: Settings = serde_json::from_str(legacy_json).expect("Must deserialize legacy");
         assert_eq!(loaded.volume, 0.6);
         assert_eq!(loaded.current_station, None);
+        assert_eq!(loaded.window, None);
         assert_eq!(loaded.bands.slots.len(), 9);
         assert_eq!(loaded.presets.slots.len(), 6);
     }
@@ -361,5 +383,16 @@ mod tests {
         assert!(loaded.dsp.eq_expanded);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_window_geometry_round_trip() {
+        let mut settings = Settings::default();
+        let geometry = WindowGeometry { x: -1500, y: 120, width: 1000, height: 300 };
+        settings.window = Some(geometry);
+
+        let json = serde_json::to_string(&settings).expect("Must serialize");
+        let loaded: Settings = serde_json::from_str(&json).expect("Must deserialize");
+        assert_eq!(loaded.window, Some(geometry));
     }
 }

@@ -5,7 +5,7 @@ use crate::audio::AudioController;
 use crate::bands::GenreBand;
 use crate::controls::vintage_ui::{VintageUiState, render_vintage_stereo};
 use crate::layout::StereoLayout;
-use crate::settings::Settings;
+use crate::settings::{Settings, WindowGeometry};
 use crate::window_frame::{ResizeDrag, ResizeEdges};
 use radiobrowser::{ApiStation, ApiTag, blocking::RadioBrowserAPI};
 use raylib::prelude::*;
@@ -59,16 +59,38 @@ fn main() {
 
     let mut last_played_channel: Option<(String, String)> = None;
 
-    let init_height = if settings.dsp.eq_expanded { 440 } else { 270 };
+    // Restore the saved window size. The window starts hidden so it can be moved to its
+    // saved position before it first appears.
+    let default_height = if settings.dsp.eq_expanded { 440 } else { 270 };
+    let (init_width, init_height) =
+        window_frame::restored_window_size(settings.window, (920, default_height));
     let (mut rl, thread) = raylib::init()
-        .size(920, init_height)
+        .size(init_width, init_height)
         .title("RaydioSurfer - Vintage Internet Radio")
         .undecorated()
         .resizable()
         .highdpi()
+        .hidden()
         .msaa_4x()
         .always_run()
         .build();
+
+    // Reuse the saved position only if enough of the window lands on a connected monitor;
+    // otherwise keep raylib's default placement, centered on the primary monitor.
+    if let Some(saved) = settings.window {
+        let size = window_frame::window_units_size(
+            (rl.get_screen_width(), rl.get_screen_height()),
+            (rl.get_render_width(), rl.get_render_height()),
+        );
+        if window_frame::is_position_visible(
+            (saved.x, saved.y),
+            size,
+            &window_frame::monitor_rects(),
+        ) {
+            rl.set_window_position(saved.x, saved.y);
+        }
+    }
+    rl.clear_window_state(WindowState::default().set_window_hidden(true));
 
     rl.set_target_fps(60);
 
@@ -95,6 +117,8 @@ fn main() {
     let mut mouse_cursor = MouseCursor::MOUSE_CURSOR_DEFAULT;
     // Set on the frame a window move/resize ends, to keep raygui locked for one more frame
     let mut window_drag_released = false;
+    // Last window placement seen while not minimized; saved to settings on exit
+    let mut window_geometry = current_window_geometry(&rl);
 
     // Main responsive loop
     while !rl.window_should_close() && !ui.close_requested {
@@ -389,6 +413,28 @@ fn main() {
             resize_drag = None;
             rl.minimize_window();
         }
+
+        // Track the window placement, skipping minimized frames (Windows reports a far
+        // off-screen position then), and persist it once a move or resize is finished.
+        if !rl.is_window_minimized() && !rl.is_window_hidden() {
+            window_geometry = current_window_geometry(&rl);
+        }
+        if window_drag_released {
+            settings.set_window_geometry(window_geometry);
+        }
+    }
+
+    settings.set_window_geometry(window_geometry);
+}
+
+/// Current window position (window units) and logical size, as saved in the settings.
+fn current_window_geometry(rl: &RaylibHandle) -> WindowGeometry {
+    let pos = rl.get_window_position();
+    WindowGeometry {
+        x: pos.x.round() as i32,
+        y: pos.y.round() as i32,
+        width: rl.get_screen_width(),
+        height: rl.get_screen_height(),
     }
 }
 

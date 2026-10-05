@@ -6,6 +6,7 @@
 //! pixels, while the mouse position and screen size are logical pixels. On macOS
 //! everything is in logical points.
 
+use crate::settings::WindowGeometry;
 use raylib::prelude::*;
 
 /// Thickness (logical pixels) of the invisible resize border along each window edge.
@@ -15,6 +16,61 @@ pub const RESIZE_CORNER: f32 = 14.0;
 /// Smallest window size (logical pixels) reachable by dragging the edges.
 pub const MIN_WINDOW_WIDTH: f32 = 480.0;
 pub const MIN_WINDOW_HEIGHT: f32 = 240.0;
+/// Largest saved window size (logical pixels) accepted on startup; anything bigger is
+/// treated as corrupt and the default size is used.
+pub const MAX_RESTORED_SIZE: i32 = 16384;
+/// Part of a restored window (window units) that must lie on a single monitor for its saved
+/// position to be reused, so it can still be grabbed and dragged.
+pub const MIN_VISIBLE_WIDTH: f32 = 200.0;
+pub const MIN_VISIBLE_HEIGHT: f32 = 100.0;
+
+/// Logical window size to create the window with: the saved size, raised to the minimum
+/// window size, or `default` when nothing usable was saved.
+pub fn restored_window_size(saved: Option<WindowGeometry>, default: (i32, i32)) -> (i32, i32) {
+    match saved {
+        Some(g)
+            if g.width > 0
+                && g.height > 0
+                && g.width <= MAX_RESTORED_SIZE
+                && g.height <= MAX_RESTORED_SIZE =>
+        {
+            (
+                g.width.max(MIN_WINDOW_WIDTH as i32),
+                g.height.max(MIN_WINDOW_HEIGHT as i32),
+            )
+        }
+        _ => default,
+    }
+}
+
+/// Whether a window of `size` (window units) placed at `pos` shows enough of itself on one
+/// of the `monitors` (desktop rectangles in window units) to be found and dragged.
+pub fn is_position_visible(pos: (i32, i32), size: Vector2, monitors: &[Rectangle]) -> bool {
+    let (x, y) = (pos.0 as f32, pos.1 as f32);
+    let need_w = MIN_VISIBLE_WIDTH.min(size.x);
+    let need_h = MIN_VISIBLE_HEIGHT.min(size.y);
+    monitors.iter().any(|m| {
+        let overlap_w = (x + size.x).min(m.x + m.width) - x.max(m.x);
+        let overlap_h = (y + size.y).min(m.y + m.height) - y.max(m.y);
+        overlap_w >= need_w && overlap_h >= need_h
+    })
+}
+
+/// Desktop rectangles of all connected monitors, in window units.
+pub fn monitor_rects() -> Vec<Rectangle> {
+    (0..get_monitor_count())
+        .map(|i| {
+            let pos = get_monitor_position(i);
+            Rectangle::new(
+                pos.x,
+                pos.y,
+                get_monitor_width(i) as f32,
+                get_monitor_height(i) as f32,
+            )
+        })
+        .filter(|r| r.width > 0.0 && r.height > 0.0)
+        .collect()
+}
 
 /// Factor converting logical pixels into window units.
 pub fn window_unit_scale(dpi_scale: Vector2) -> Vector2 {
@@ -191,6 +247,44 @@ mod tests {
         let scale = window_unit_scale(Vector2::new(1.5, 1.5));
         let c = cursor_in_window_units(Vector2::new(100.0, 50.0), Vector2::new(10.0, 20.0), scale);
         assert_eq!(c, Vector2::new(115.0, 80.0));
+    }
+
+    #[test]
+    fn test_restored_window_size() {
+        let g = |width, height| Some(WindowGeometry { x: 0, y: 0, width, height });
+        assert_eq!(restored_window_size(None, (920, 270)), (920, 270));
+        assert_eq!(restored_window_size(g(1100, 320), (920, 270)), (1100, 320));
+        // Below the minimum is raised to it
+        assert_eq!(restored_window_size(g(300, 100), (920, 270)), (480, 240));
+        // Nonsense sizes fall back to the default
+        assert_eq!(restored_window_size(g(0, 300), (920, 440)), (920, 440));
+        assert_eq!(restored_window_size(g(1000, -5), (920, 440)), (920, 440));
+        assert_eq!(restored_window_size(g(100_000, 300), (920, 440)), (920, 440));
+    }
+
+    #[test]
+    fn test_is_position_visible() {
+        // Primary 1920x1080 at the origin, a second monitor to its left
+        let monitors = [
+            Rectangle::new(0.0, 0.0, 1920.0, 1080.0),
+            Rectangle::new(-2560.0, -200.0, 2560.0, 1440.0),
+        ];
+        let size = Vector2::new(1380.0, 405.0);
+
+        assert!(is_position_visible((100, 100), size, &monitors));
+        assert!(is_position_visible((-2000, 900), size, &monitors));
+        // Partly off the right edge, but 220 px still on screen
+        assert!(is_position_visible((1700, 500), size, &monitors));
+        // Only 50 px on screen horizontally, or 40 px vertically
+        assert!(!is_position_visible((1870, 500), size, &monitors));
+        assert!(!is_position_visible((100, 1040), size, &monitors));
+        // Below the shorter primary monitor, in the gap no monitor covers
+        assert!(!is_position_visible((500, 1300), size, &monitors));
+        // Monitor that has since been disconnected
+        assert!(!is_position_visible((4000, 100), size, &monitors));
+        assert!(!is_position_visible((100, 100), size, &[]));
+        // A tiny window only needs to be fully on screen
+        assert!(is_position_visible((1800, 1000), Vector2::new(120.0, 80.0), &monitors));
     }
 
     #[test]
