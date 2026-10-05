@@ -49,6 +49,10 @@ pub struct VintageUiState {
     pub is_loading: bool,
     pub loading_timer: f32,
     pub requested_preset: Option<usize>,
+    /// Set while drawing when the mouse is over any interactive control this frame.
+    pub pointer_over_control: bool,
+    /// True while the undecorated window is being dragged by the background.
+    pub window_dragging: bool,
 }
 
 impl VintageUiState {
@@ -84,7 +88,19 @@ impl VintageUiState {
             is_loading: false,
             loading_timer: 0.0,
             requested_preset: None,
+            pointer_over_control: false,
+            window_dragging: false,
         }
+    }
+
+    /// Record that `rect` is an interactive control and return it unchanged, so it can be
+    /// wrapped around the bounds passed to a control. Marks the pointer as over a control
+    /// when `mouse` lies inside `rect`.
+    pub fn hit(&mut self, rect: Rectangle, mouse: Vector2) -> Rectangle {
+        if rect.check_collision_point_rec(mouse) {
+            self.pointer_over_control = true;
+        }
+        rect
     }
 }
 
@@ -213,6 +229,7 @@ pub fn render_vintage_stereo(
 
     let dt = d.get_frame_time();
     let mouse_pos = d.get_mouse_position();
+    ui.pointer_over_control = false;
     if ui.is_loading {
         ui.loading_timer += dt;
     } else {
@@ -398,7 +415,7 @@ pub fn render_vintage_stereo(
     } else {
         "#133#POWER OFF"
     };
-    if d.gui_button(layout.power_btn_rect, power_label) {
+    if d.gui_button(ui.hit(layout.power_btn_rect, mouse_pos), power_label) {
         ui.is_power_on = !ui.is_power_on;
         if ui.is_power_on {
             audio.set_volume(ui.volume);
@@ -421,7 +438,7 @@ pub fn render_vintage_stereo(
     } else {
         "#139#EQ"
     };
-    if d.gui_button(layout.eq_btn_rect, eq_btn_label) {
+    if d.gui_button(ui.hit(layout.eq_btn_rect, mouse_pos), eq_btn_label) {
         ui.eq_expanded = !ui.eq_expanded;
         settings.set_eq_expanded(ui.eq_expanded);
         ui.eq_window_toggle_requested = Some(ui.eq_expanded);
@@ -436,7 +453,8 @@ pub fn render_vintage_stereo(
         Color::RAYWHITE,
     );
     let prev_vol = ui.volume;
-    d.gui_slider(layout.vol_slider_rect, "", "", &mut ui.volume, 0.0, 1.0);
+    let vol_rect = ui.hit(layout.vol_slider_rect, mouse_pos);
+    d.gui_slider(vol_rect, "", "", &mut ui.volume, 0.0, 1.0);
     if (ui.volume - prev_vol).abs() > 0.005 {
         audio.set_volume(ui.volume);
         settings.set_volume(ui.volume);
@@ -448,8 +466,9 @@ pub fn render_vintage_stereo(
         GuiControlProperty::TEXT_ALIGNMENT,
         raylib::ffi::GuiTextAlignment::TEXT_ALIGN_LEFT as i32,
     );
-    d.gui_text_box(layout.search_box_rect, &mut ui.search_input, true);
-    if d.gui_button(layout.search_clear_rect, "#113#Clear") {
+    let search_rect = ui.hit(layout.search_box_rect, mouse_pos);
+    d.gui_text_box(search_rect, &mut ui.search_input, true);
+    if d.gui_button(ui.hit(layout.search_clear_rect, mouse_pos), "#113#Clear") {
         ui.search_input.clear();
         ui.active_index = 0;
     }
@@ -459,7 +478,7 @@ pub fn render_vintage_stereo(
     let mut band_to_save: Option<(usize, String)> = None;
 
     for idx in 0..num_band_btns {
-        let rect = layout.band_btn_rects[idx];
+        let rect = ui.hit(layout.band_btn_rects[idx], mouse_pos);
         let is_active = ui.active_band_idx == idx;
         let band_label = &settings.bands.slots[idx].label;
         let label = if is_active {
@@ -525,8 +544,9 @@ pub fn render_vintage_stereo(
     // Interactive Dial Tap / Drag to Jump
     let is_mouse_down = d.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT);
     let dial_hovered = layout.dial_track_rect.check_collision_point_rec(mouse_pos);
+    ui.hit(layout.dial_track_rect, mouse_pos);
 
-    if dial_hovered && is_mouse_down && active_filtered_count > 0 {
+    if dial_hovered && is_mouse_down && !ui.window_dragging && active_filtered_count > 0 {
         let prog = layout.needle_progress_from_x(mouse_pos.x);
         let new_idx = ((prog * (active_filtered_count - 1) as f32).round() as usize)
             .min(active_filtered_count - 1);
@@ -560,25 +580,25 @@ pub fn render_vintage_stereo(
     );
 
     // 8. Coarse & Fine Step Buttons
-    if d.gui_button(layout.coarse_prev_rect, "<< 100") && active_filtered_count > 0 {
+    if d.gui_button(ui.hit(layout.coarse_prev_rect, mouse_pos), "<< 100") && active_filtered_count > 0 {
         ui.active_index = ui.active_index.saturating_sub(100);
     }
-    if d.gui_button(layout.fine_prev_rect, "< TUNE") && active_filtered_count > 0 {
+    if d.gui_button(ui.hit(layout.fine_prev_rect, mouse_pos), "< TUNE") && active_filtered_count > 0 {
         ui.active_index = ui.active_index.saturating_sub(1);
     }
-    if d.gui_button(layout.fine_next_rect, "TUNE >")
+    if d.gui_button(ui.hit(layout.fine_next_rect, mouse_pos), "TUNE >")
         && active_filtered_count > 0
         && ui.active_index + 1 < active_filtered_count
     {
         ui.active_index += 1;
     }
-    if d.gui_button(layout.coarse_next_rect, "100 >>") && active_filtered_count > 0 {
+    if d.gui_button(ui.hit(layout.coarse_next_rect, mouse_pos), "100 >>") && active_filtered_count > 0 {
         ui.active_index = (ui.active_index + 100).min(active_filtered_count - 1);
     }
 
     // 9. Six Preset Push Buttons
     for i in 0..6 {
-        let preset_rect = layout.preset_rects[i];
+        let preset_rect = ui.hit(layout.preset_rects[i], mouse_pos);
         let preset_station = settings.get_preset(i);
         let btn_label = if let Some(st) = preset_station {
             format!(
@@ -654,14 +674,14 @@ pub fn render_vintage_stereo(
         } else {
             "#133#EQ OFF"
         };
-        if d.gui_button(layout.eq_power_btn_rect, eq_pwr_label) {
+        if d.gui_button(ui.hit(layout.eq_power_btn_rect, mouse_pos), eq_pwr_label) {
             ui.eq_enabled = !ui.eq_enabled;
             audio.set_eq_enabled(ui.eq_enabled);
             settings.set_eq_enabled(ui.eq_enabled);
         }
 
         // Flat Reset Button
-        if d.gui_button(layout.eq_reset_btn_rect, "#113#FLAT") {
+        if d.gui_button(ui.hit(layout.eq_reset_btn_rect, mouse_pos), "#113#FLAT") {
             ui.eq_bands = [0.0; crate::dsp::NUM_EQ_BANDS];
             audio.set_eq_bands(ui.eq_bands);
             settings.set_eq_bands(ui.eq_bands);
@@ -691,7 +711,8 @@ pub fn render_vintage_stereo(
         }
 
         let prev_bal = ui.balance;
-        d.gui_slider(layout.balance_slider_rect, "L", "R", &mut ui.balance, -1.0, 1.0);
+        let bal_rect = ui.hit(layout.balance_slider_rect, mouse_pos);
+        d.gui_slider(bal_rect, "L", "R", &mut ui.balance, -1.0, 1.0);
         if ui.balance.abs() < 0.04 {
             ui.balance = 0.0;
         }
@@ -700,7 +721,7 @@ pub fn render_vintage_stereo(
             settings.set_balance(ui.balance);
         }
 
-        if d.gui_button(layout.balance_center_btn_rect, "CTR") {
+        if d.gui_button(ui.hit(layout.balance_center_btn_rect, mouse_pos), "CTR") {
             ui.balance = 0.0;
             audio.set_balance(0.0);
             settings.set_balance(0.0);
@@ -748,7 +769,7 @@ pub fn render_vintage_stereo(
             );
 
             // Fader track
-            let track_rect = layout.eq_band_rects[i];
+            let track_rect = ui.hit(layout.eq_band_rects[i], mouse_pos);
             let slot_w = 4.0;
             let slot_x = track_rect.x + (track_rect.width - slot_w) / 2.0;
             d.draw_rectangle_rounded(
@@ -775,7 +796,7 @@ pub fn render_vintage_stereo(
 
             // Handle fader mouse drag & click
             let hovered = track_rect.check_collision_point_rec(mouse_pos);
-            if (hovered && is_left_down && ui.dragging_band_idx.is_none())
+            if (hovered && is_left_down && !ui.window_dragging && ui.dragging_band_idx.is_none())
                 || ui.dragging_band_idx == Some(i)
             {
                 ui.dragging_band_idx = Some(i);
@@ -852,6 +873,27 @@ mod tests {
         assert_eq!(state.title_anim_direction, 1);
         assert_eq!(state.title_anim_pause, TITLE_ANIM_PAUSE_DURATION);
         assert_eq!(state.requested_preset, None);
+        assert!(!state.pointer_over_control);
+        assert!(!state.window_dragging);
+    }
+
+    #[test]
+    fn test_hit_marks_pointer_over_control() {
+        let mut state = VintageUiState::new(0.75);
+        let rect = Rectangle::new(10.0, 10.0, 50.0, 20.0);
+
+        // Outside: flag stays clear, rect is passed through unchanged
+        let out = state.hit(rect, Vector2::new(5.0, 5.0));
+        assert_eq!((out.x, out.y, out.width, out.height), (10.0, 10.0, 50.0, 20.0));
+        assert!(!state.pointer_over_control);
+
+        // Inside: flag set
+        state.hit(rect, Vector2::new(30.0, 20.0));
+        assert!(state.pointer_over_control);
+
+        // A later miss in the same frame does not clear an earlier hit
+        state.hit(rect, Vector2::new(500.0, 500.0));
+        assert!(state.pointer_over_control);
     }
 
     #[test]
