@@ -188,6 +188,8 @@ raydio-surfer/
 ├── build.rs                    # Windows build script for embedding application icon
 ├── Cargo.toml                  # Rust project manifest and dependencies
 ├── Cargo.lock                  # Pinned dependency lockfile
+├── LICENSE-APACHE              # Apache License 2.0
+├── LICENSE-MIT                 # MIT License
 ├── PLAN.md                     # Architecture specification and roadmap
 └── README.md                   # Project documentation
 ```
@@ -196,5 +198,9 @@ raydio-surfer/
 
 ## License
 
-<!-- TODO: Specify license (e.g. MIT, Apache 2.0, or GPL) and include LICENSE file in repository -->
-TODO: Add project license.
+This project is dual-licensed under either:
+
+- **MIT License** ([LICENSE-MIT](LICENSE-MIT))
+- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
+
+at your option.
